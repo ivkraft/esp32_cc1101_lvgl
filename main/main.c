@@ -55,11 +55,18 @@ static const char *TAG = "main";
 #define PIN_CC_GDO0 3
 #define PIN_CC_GDO2 38
 
+
+
+
 // ===== LVGL handles =====
 static lv_disp_t *s_disp = NULL;
 static lv_indev_t *s_encoder = NULL;
 static lv_group_t *menu_group = NULL;
 static button_handle_t s_esc_btn = NULL;
+
+    const char *icons[] = { LV_SYMBOL_GPS, LV_SYMBOL_WIFI, LV_SYMBOL_BLUETOOTH, LV_SYMBOL_DRIVE, LV_SYMBOL_SETTINGS };
+    const char *names[] = { "RF", "WiFi", "Bluetooth", "Drive", "Settings" };
+
 
 // Direction invert if needed
 static const int invert_dir = 0;
@@ -178,41 +185,16 @@ static void card_clicked_cb(lv_event_t *e)
     lv_obj_t *card = lv_event_get_target(e);
     uintptr_t idx = (uintptr_t)lv_event_get_user_data(e);
 
-    ESP_LOGI("UI", "Card %u clicked", (unsigned)idx);
+    ESP_LOGI("UI", "Card %s clicked", names[idx]);
     s_in_submenu = true;
 
     // TODO: тут переключение экранов / открытие меню / вызов функции
     // open_rf_screen(); / open_wifi_screen(); / open_settings_screen();
 }
 
-// Центрирование "карусели" по фокусу (LVGL 8.3.x)
-static void card_focus_center_cb(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_FOCUSED) return;
 
-    lv_obj_t *card = lv_event_get_target(e);
-    lv_obj_t *cont = lv_obj_get_parent(card);
 
-    // обязательно: чтобы x/w были актуальны после flex
-    lv_obj_update_layout(cont);
 
-    lv_coord_t cont_w = lv_obj_get_width(cont);
-    lv_coord_t card_center_x = lv_obj_get_x(card) + lv_obj_get_width(card) / 2;
-    lv_coord_t target_scroll_x = card_center_x - cont_w / 2;
-
-    lv_obj_scroll_to_x(cont, target_scroll_x, LV_ANIM_ON);
-    lv_obj_move_foreground(card);
-}
-
-static void event_handler(lv_event_t * e)
-{
-    // Обработчик событий для роллера
-    // if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
-    //     lv_obj_t * roller = lv_event_get_target(e);
-    //     uint16_t selected = lv_roller_get_selected(roller);
-    //     ESP_LOGI("ROLLER", "Selected option index: %d", selected);
-    // }
-}
 
 static void create_beautiful_menu(void)
 {
@@ -228,8 +210,8 @@ static void create_beautiful_menu(void)
     const lv_coord_t view_w = 320;
     const lv_coord_t view_h = 170;
 
-    const lv_coord_t card_w = 80;
-    const lv_coord_t card_h = 100;
+    const lv_coord_t card_w = 100;
+    const lv_coord_t card_h = 140;
     const lv_coord_t gap    = 10;
 
     lv_obj_t *cont = lv_obj_create(scr);
@@ -257,8 +239,7 @@ static void create_beautiful_menu(void)
     // ВАЖНО: чтобы outline не клипался — ставим на РОДИТЕЛЯ
     lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
-    const char *icons[] = { LV_SYMBOL_GPS, LV_SYMBOL_WIFI, LV_SYMBOL_BLUETOOTH, LV_SYMBOL_DRIVE, LV_SYMBOL_SETTINGS };
-    const char *names[] = { "RF", "WiFi", "Bluetooth", "Drive", "Settings" };
+
 
     lv_color_t colors[] = {
         lv_palette_main(LV_PALETTE_RED),
