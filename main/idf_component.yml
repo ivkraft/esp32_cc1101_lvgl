@@ -1,4 +1,6 @@
 dependencies:
   idf: ">=5.0"
   lvgl/lvgl: "~8.3.11"
-  espressif/esp_lvgl_port: "^2.0.0"
+  espressif/esp_lvgl_port: "^2.7.0"
+  espressif/knob: "*"
+  espressif/button: "*"
