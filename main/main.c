@@ -2,6 +2,9 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 
+#include <time.h>
+#include <sys/time.h>
+
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 
@@ -63,9 +66,10 @@ static lv_disp_t *s_disp = NULL;
 static lv_indev_t *s_encoder = NULL;
 static lv_group_t *menu_group = NULL;
 static button_handle_t s_esc_btn = NULL;
-
+// Menu data
     const char *icons[] = { LV_SYMBOL_GPS, LV_SYMBOL_WIFI, LV_SYMBOL_BLUETOOTH, LV_SYMBOL_DRIVE, LV_SYMBOL_SETTINGS };
     const char *names[] = { "RF", "WiFi", "Bluetooth", "Drive", "Settings" };
+
 
 
 // Direction invert if needed
@@ -193,6 +197,117 @@ static void card_clicked_cb(lv_event_t *e)
 }
 
 
+// Add these globals somewhere near your other UI globals
+static lv_obj_t *s_batt_label = NULL;
+static int batt_proc = 50; // 0..100 (you will update this from your code)
+
+
+//-- time
+
+
+static lv_obj_t   *s_time_label = NULL;
+static lv_timer_t *s_time_timer = NULL;
+
+
+static void set_time_to_2026_01_13_17_00_local(void)
+{
+    // ВАЖНО: это "локальное" время. Если TZ не задан — будет интерпретация как UTC.
+    // Для Нью-Йорка, например:
+    // setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2", 1);
+    // tzset();
+
+    struct tm t = {0};
+    t.tm_year = 2026 - 1900; // годы с 1900
+    t.tm_mon  = 0;           // Jan = 0
+    t.tm_mday = 13;
+    t.tm_hour = 17;          // 5:00 PM = 17:00
+    t.tm_min  = 0;
+    t.tm_sec  = 0;
+    t.tm_isdst = -1;         // пусть libc сама определит DST по TZ
+
+    time_t epoch = mktime(&t);
+    if (epoch == (time_t)-1) {
+        ESP_LOGE("TIME", "mktime failed");
+        return;
+    }
+
+    struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+
+    ESP_LOGI("TIME", "Time set to 2026-01-13 17:00 (local)");
+}
+
+static bool sys_time_get_local(struct tm *out_tm)
+{
+    time_t now = time(NULL);
+
+    // Если время не выставлено (после холодного старта), now будет маленький
+    // Порог можно менять, но этот норм для “время не установлено”
+    if (now < 1700000000) { // ~2023-11
+        return false;
+    }
+
+    localtime_r(&now, out_tm);
+    return true;
+}
+
+static void ui_time_update_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_time_label) return;
+
+    struct tm tm_now;
+    if (!sys_time_get_local(&tm_now)) {
+        lv_label_set_text(s_time_label, "--:--");
+        return;
+    }
+
+    char buf[32];
+    // Формат на ваш вкус:
+    // strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_now);
+    strftime(buf, sizeof(buf), "%H:%M %m/%d", &tm_now);
+    lv_label_set_text(s_time_label, buf);
+}
+
+static void ui_time_init(lv_obj_t *scr)
+{
+    if (!s_time_label) {
+        s_time_label = lv_label_create(scr);
+        lv_obj_set_style_text_color(s_time_label, lv_color_white(), 0);
+        lv_obj_set_style_text_font(s_time_label, &lv_font_montserrat_18, 0);
+        lv_obj_align(s_time_label, LV_ALIGN_TOP_MID, 0, 4);
+    }
+
+    ui_time_update_cb(NULL);
+
+    if (!s_time_timer) {
+        s_time_timer = lv_timer_create(ui_time_update_cb, 1000, NULL);
+    }
+}
+// Simple battery glyph: 0..10 bars inside [..........]
+// You can replace this with LV_SYMBOL_BATTERY_FULL etc. later if you want.
+static const char *battery_symbol_from_percent(int pct)
+{
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+
+    // 5 levels: empty, 1,2,3, full
+    if (pct <= 5)   return LV_SYMBOL_BATTERY_EMPTY;
+    if (pct <= 25)  return LV_SYMBOL_BATTERY_1;
+    if (pct <= 50)  return LV_SYMBOL_BATTERY_2;
+    if (pct <= 75)  return LV_SYMBOL_BATTERY_3;
+    return LV_SYMBOL_BATTERY_FULL;
+}
+
+static void ui_set_battery_percent(int pct)
+{
+    if (!s_batt_label) return;
+    lv_label_set_text(s_batt_label, battery_symbol_from_percent(pct));
+
+}
+
+
+
 
 
 
@@ -210,8 +325,8 @@ static void create_beautiful_menu(void)
     const lv_coord_t view_w = 320;
     const lv_coord_t view_h = 170;
 
-    const lv_coord_t card_w = 100;
-    const lv_coord_t card_h = 140;
+    const lv_coord_t card_w = 80;
+    const lv_coord_t card_h = 120;
     const lv_coord_t gap    = 10;
 
     lv_obj_t *cont = lv_obj_create(scr);
@@ -221,7 +336,7 @@ static void create_beautiful_menu(void)
     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_opa(cont, LV_OPA_TRANSP, 0);
 
-    lv_obj_set_style_pad_top(cont, 0, 0);
+    lv_obj_set_style_pad_top(cont, 10, 0);
     lv_obj_set_style_pad_bottom(cont, 0, 0);
 
     lv_coord_t side_pad = (view_w - card_w) / 2;
@@ -236,12 +351,10 @@ static void create_beautiful_menu(void)
     lv_obj_set_scroll_snap_x(cont, LV_SCROLL_SNAP_CENTER);
     lv_obj_set_scroll_snap_y(cont, LV_SCROLL_SNAP_NONE);
 
-    // ВАЖНО: чтобы outline не клипался — ставим на РОДИТЕЛЯ
+    // to avoid clipping outline
     lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
-
-
-    lv_color_t colors[] = {
+        lv_color_t colors[] = {
         lv_palette_main(LV_PALETTE_RED),
         lv_palette_main(LV_PALETTE_BLUE),
         lv_palette_main(LV_PALETTE_AMBER),
@@ -249,8 +362,19 @@ static void create_beautiful_menu(void)
         lv_palette_main(LV_PALETTE_PURPLE),
     };
 
-    // Инициализируем стиль фокуса 1 раз
     focus_style_init_once();
+
+    // ---------------- Battery (top-right) ----------------
+    // Put it on SCR so it doesn't move when cont scrolls
+    s_batt_label = lv_label_create(scr);
+    lv_obj_set_style_text_color(s_batt_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, 0, 4);
+    ui_set_battery_percent(batt_proc); // initial draw
+    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_18, 0);
+    // ---------------- Time (top-center) ----------------
+    ui_time_init(scr);
+    // -----------------------------------------------------
 
     lv_obj_t *first_card = NULL;
 
@@ -264,7 +388,7 @@ static void create_beautiful_menu(void)
         lv_coord_t y = (view_h - card_h) / 2;
         lv_obj_set_pos(card, x, y);
 
-        // базовый стиль
+        // base style
         lv_obj_set_style_radius(card, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A1A), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -273,10 +397,10 @@ static void create_beautiful_menu(void)
         lv_obj_set_style_border_color(card, lv_color_hex(0x333333), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_border_opa(card, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-        // Контент
+        // content
         lv_obj_t *lbl_icon = lv_label_create(card);
         lv_label_set_text(lbl_icon, icons[i]);
-        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_36, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(lbl_icon, colors[i], LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 14);
 
@@ -285,9 +409,7 @@ static void create_beautiful_menu(void)
         lv_obj_set_style_text_color(lbl_name, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -10);
 
-        // ВАЖНО: если хочешь РАЗНЫЙ цвет рамки — один общий стиль не подойдет.
-        // Тогда либо делай 5 style (по одному на цвет), либо оставь цвет общий.
-        // Если устраивает общий цвет рамки (например красный) — просто add_style:
+        // focus outline (encoder/keypad): LV_STATE_FOCUS_KEY
         lv_obj_add_style(card, &s_style_focus, LV_STATE_FOCUS_KEY);
 
         lv_group_add_obj(menu_group, card);
@@ -298,6 +420,7 @@ static void create_beautiful_menu(void)
         lv_group_focus_obj(first_card);
     }
 }
+
 
 
 
@@ -424,6 +547,7 @@ static lv_indev_t *init_encoder_via_lvgl_port(void)
 // ------------------------- app_main -------------------------
 void app_main(void)
 {
+    set_time_to_2026_01_13_17_00_local();
     init_display();
     init_panel();
 
