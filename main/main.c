@@ -258,7 +258,7 @@ static void create_beautiful_menu(void)
 
         lv_obj_set_style_border_width(card, 4, LV_STATE_FOCUSED);
         lv_obj_set_style_border_color(card, colors[i], LV_STATE_FOCUSED);
-        lv_obj_set_style_shadow_width(card, 18, LV_STATE_FOCUSED);
+       // lv_obj_set_style_shadow_width(card, 18, LV_STATE_FOCUSED);
         lv_obj_set_style_shadow_color(card, colors[i], LV_STATE_FOCUSED);
         lv_obj_set_style_shadow_opa(card, LV_OPA_70, LV_STATE_FOCUSED);
 
@@ -343,15 +343,15 @@ static void init_panel(void)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = panel_handle,
-        .buffer_size = 320 * 40,
-        .double_buffer = false,
+        .buffer_size = 320 * 170,
+        .double_buffer = true,
         .hres = 320,
         .vres = 170,
         .monochrome = false,
         .rotation = {
             .swap_xy = true,
             .mirror_x = false,
-            .mirror_y = false,
+            .mirror_y = true,
         },
     };
 
