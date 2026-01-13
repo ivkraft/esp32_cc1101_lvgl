@@ -156,6 +156,23 @@ static void card_key_cb(lv_event_t *e)
     // ui_open_submenu(idx); // если у вас есть
 }
 
+
+static lv_style_t s_style_focus;
+static bool s_style_focus_inited = false;
+
+static void focus_style_init_once(void)
+{
+    if (s_style_focus_inited) return;
+    s_style_focus_inited = true;
+
+    lv_style_init(&s_style_focus);
+    lv_style_set_outline_width(&s_style_focus, 6);      // толщина рамки
+    lv_style_set_outline_pad(&s_style_focus, 2);        // “наружу”
+    lv_style_set_outline_color(&s_style_focus, lv_color_make(255, 0, 0)); // Set the color (Red in this case)
+    lv_style_set_outline_opa(&s_style_focus, LV_OPA_COVER);
+    // цвет зададим отдельно на каждой карточке (см. ниже), либо оставим общий
+}
+
 static void card_clicked_cb(lv_event_t *e)
 {
     lv_obj_t *card = lv_event_get_target(e);
@@ -168,32 +185,33 @@ static void card_clicked_cb(lv_event_t *e)
     // open_rf_screen(); / open_wifi_screen(); / open_settings_screen();
 }
 
-static void card_focus_cb(lv_event_t *e)
+// Центрирование "карусели" по фокусу (LVGL 8.3.x)
+static void card_focus_center_cb(lv_event_t *e)
 {
+    if (lv_event_get_code(e) != LV_EVENT_FOCUSED) return;
+
     lv_obj_t *card = lv_event_get_target(e);
-    card_geom_t *g = (card_geom_t *)lv_event_get_user_data(e);
-    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *cont = lv_obj_get_parent(card);
 
-    if (!g)
-        return;
+    // обязательно: чтобы x/w были актуальны после flex
+    lv_obj_update_layout(cont);
 
-    if (code == LV_EVENT_FOCUSED)
-    {
-        lv_obj_move_foreground(card);
+    lv_coord_t cont_w = lv_obj_get_width(cont);
+    lv_coord_t card_center_x = lv_obj_get_x(card) + lv_obj_get_width(card) / 2;
+    lv_coord_t target_scroll_x = card_center_x - cont_w / 2;
 
-        const lv_coord_t dw = 14;
-        const lv_coord_t dh = 14;
+    lv_obj_scroll_to_x(cont, target_scroll_x, LV_ANIM_ON);
+    lv_obj_move_foreground(card);
+}
 
-        lv_obj_set_size(card, g->w + dw, g->h + dh);
-        lv_obj_set_pos(card, g->x - dw / 2, g->y - dh / 2);
-        lv_obj_invalidate(card);
-    }
-    else if (code == LV_EVENT_DEFOCUSED)
-    {
-        lv_obj_set_size(card, g->w, g->h);
-        lv_obj_set_pos(card, g->x, g->y);
-        lv_obj_invalidate(card);
-    }
+static void event_handler(lv_event_t * e)
+{
+    // Обработчик событий для роллера
+    // if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+    //     lv_obj_t * roller = lv_event_get_target(e);
+    //     uint16_t selected = lv_roller_get_selected(roller);
+    //     ESP_LOGI("ROLLER", "Selected option index: %d", selected);
+    // }
 }
 
 static void create_beautiful_menu(void)
@@ -202,92 +220,106 @@ static void create_beautiful_menu(void)
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    if (menu_group == NULL)
-    {
+    if (menu_group == NULL) {
         menu_group = lv_group_create();
         lv_group_set_default(menu_group);
     }
 
+    const lv_coord_t view_w = 320;
+    const lv_coord_t view_h = 170;
+
+    const lv_coord_t card_w = 80;
+    const lv_coord_t card_h = 100;
+    const lv_coord_t gap    = 10;
+
     lv_obj_t *cont = lv_obj_create(scr);
-    lv_obj_set_size(cont, 320, 170);
+    lv_obj_set_size(cont, view_w, view_h);
     lv_obj_center(cont);
 
     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_opa(cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_all(cont, 0, 0);
 
-    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    lv_obj_set_style_pad_top(cont, 0, 0);
+    lv_obj_set_style_pad_bottom(cont, 0, 0);
 
-    const char *icons[] = {LV_SYMBOL_GPS, LV_SYMBOL_WIFI, LV_SYMBOL_SETTINGS};
-    const char *names[] = {"RF", "WiFi", "Settings"};
+    lv_coord_t side_pad = (view_w - card_w) / 2;
+    lv_obj_set_style_pad_left(cont, side_pad, 0);
+    lv_obj_set_style_pad_right(cont, side_pad, 0);
+
+    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(cont, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    lv_obj_set_scroll_snap_x(cont, LV_SCROLL_SNAP_CENTER);
+    lv_obj_set_scroll_snap_y(cont, LV_SCROLL_SNAP_NONE);
+
+    // ВАЖНО: чтобы outline не клипался — ставим на РОДИТЕЛЯ
+    lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+
+    const char *icons[] = { LV_SYMBOL_GPS, LV_SYMBOL_WIFI, LV_SYMBOL_BLUETOOTH, LV_SYMBOL_DRIVE, LV_SYMBOL_SETTINGS };
+    const char *names[] = { "RF", "WiFi", "Bluetooth", "Drive", "Settings" };
+
     lv_color_t colors[] = {
         lv_palette_main(LV_PALETTE_RED),
         lv_palette_main(LV_PALETTE_BLUE),
         lv_palette_main(LV_PALETTE_AMBER),
+        lv_palette_main(LV_PALETTE_GREEN),
+        lv_palette_main(LV_PALETTE_PURPLE),
     };
 
-    const lv_coord_t card_w = 80;
-    const lv_coord_t card_h = 100;
-    const lv_coord_t gap = 10;
+    // Инициализируем стиль фокуса 1 раз
+    focus_style_init_once();
 
-    const lv_coord_t total_w = (card_w * 3) + (gap * 2);
-    const lv_coord_t start_x = (320 - total_w) / 2;
-    const lv_coord_t y = (170 - card_h) / 2;
-
-    static card_geom_t geoms[3];
     lv_obj_t *first_card = NULL;
 
-    for (int i = 0; i < 3; i++)
-    {
+    for (int i = 0; i < 5; i++) {
         lv_obj_t *card = lv_btn_create(cont);
-        if (!first_card)
-            first_card = card;
-
-        lv_coord_t x = start_x + i * (card_w + gap);
-        geoms[i] = (card_geom_t){.x = x, .y = y, .w = card_w, .h = card_h};
+        if (!first_card) first_card = card;
 
         lv_obj_set_size(card, card_w, card_h);
+
+        lv_coord_t x = i * (card_w + gap);
+        lv_coord_t y = (view_h - card_h) / 2;
         lv_obj_set_pos(card, x, y);
 
-        lv_obj_set_style_radius(card, 12, 0);
-        lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A1A), 0);
-        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(card, 1, 0);
-        lv_obj_set_style_border_color(card, lv_color_hex(0x333333), 0);
+        // базовый стиль
+        lv_obj_set_style_radius(card, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A1A), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-        lv_obj_set_style_border_width(card, 4, LV_STATE_FOCUSED);
-        lv_obj_set_style_border_color(card, colors[i], LV_STATE_FOCUSED);
-       // lv_obj_set_style_shadow_width(card, 18, LV_STATE_FOCUSED);
-        lv_obj_set_style_shadow_color(card, colors[i], LV_STATE_FOCUSED);
-        lv_obj_set_style_shadow_opa(card, LV_OPA_70, LV_STATE_FOCUSED);
+        lv_obj_set_style_border_width(card, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(card, lv_color_hex(0x333333), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(card, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-
+        // Контент
         lv_obj_t *lbl_icon = lv_label_create(card);
         lv_label_set_text(lbl_icon, icons[i]);
-        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_24, 0);
-        lv_obj_set_style_text_color(lbl_icon, colors[i], 0);
+        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(lbl_icon, colors[i], LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 14);
 
         lv_obj_t *lbl_name = lv_label_create(card);
         lv_label_set_text(lbl_name, names[i]);
-        lv_obj_set_style_text_color(lbl_name, lv_color_white(), 0);
+        lv_obj_set_style_text_color(lbl_name, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -10);
 
-        lv_obj_add_event_cb(card, card_focus_cb, LV_EVENT_FOCUSED, &geoms[i]);
-        lv_obj_add_event_cb(card, card_focus_cb, LV_EVENT_DEFOCUSED, &geoms[i]);
-        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-       // lv_obj_add_event_cb(lv_scr_act(), card_key_cb, LV_EVENT_KEY, (void *)(uintptr_t)i);
-
-        lv_obj_add_event_cb(card, card_clicked_cb, LV_EVENT_PRESSED, (void *)(uintptr_t)i);
+        // ВАЖНО: если хочешь РАЗНЫЙ цвет рамки — один общий стиль не подойдет.
+        // Тогда либо делай 5 style (по одному на цвет), либо оставь цвет общий.
+        // Если устраивает общий цвет рамки (например красный) — просто add_style:
+        lv_obj_add_style(card, &s_style_focus, LV_STATE_FOCUS_KEY);
 
         lv_group_add_obj(menu_group, card);
+        lv_obj_add_event_cb(card, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
     }
 
-    if (first_card)
+    if (first_card) {
         lv_group_focus_obj(first_card);
+    }
 }
+
+
+
 
 // ------------------------- Display init (ваш код) -------------------------
 static void init_display(void)
@@ -312,6 +344,9 @@ static void init_panel(void)
 {
     esp_lcd_panel_io_handle_t io_handle = NULL;
 
+      lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+    
     esp_lcd_panel_io_spi_config_t io_config = {};
     io_config.dc_gpio_num = PIN_NUM_DC;
     io_config.cs_gpio_num = PIN_NUM_CS;
@@ -336,8 +371,7 @@ static void init_panel(void)
     esp_lcd_panel_set_gap(panel_handle, 0, 35);
     esp_lcd_panel_disp_on_off(panel_handle, true);
 
-    lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+  
 
     // Оставляем вашу структуру (без полей, которых нет в вашем заголовке)
     const lvgl_port_display_cfg_t disp_cfg = {
@@ -353,6 +387,9 @@ static void init_panel(void)
             .mirror_x = false,
             .mirror_y = true,
         },
+        .flags = {
+            .buff_spiram = false,
+        }
     };
 
     s_disp = lvgl_port_add_disp(&disp_cfg);
