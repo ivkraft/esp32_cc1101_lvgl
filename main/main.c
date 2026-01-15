@@ -121,6 +121,43 @@ static void esc_btn_cb(void *button_handle, void *usr_data)
     }
 }
 
+
+
+//DISPLAY LED
+
+static bool s_backlight_on = true;
+static bool s_ignore_next_up = false;
+
+static inline void backlight_set(bool on)
+{
+    s_backlight_on = on;
+    gpio_set_level(PIN_NUM_BK_LIGHT, on ? 1 : 0);
+}
+
+static void esc_short_up_cb(void *btn_handle, void *usr_data)
+{
+    (void)btn_handle; (void)usr_data;
+
+    if (s_ignore_next_up) { // это отпускание после long-press
+        s_ignore_next_up = false;
+        return;
+    }
+
+    if (lvgl_port_lock(0)) {
+        ui_back_to_menu_group();
+        lvgl_port_unlock();
+    }
+}
+
+static void esc_long_cb(void *btn_handle, void *usr_data)
+{
+    (void)btn_handle; (void)usr_data;
+
+    s_ignore_next_up = true;          // чтобы отпускание не сделало "назад"
+    backlight_set(!s_backlight_on);   // toggle подсветки
+}
+//---- DISPLAY LED X ----
+
 static void init_esc_button(void)
 {
     static const button_gpio_config_t esc_cfg = {
@@ -130,9 +167,12 @@ static void init_esc_button(void)
     static const button_config_t btn_cfg = {0};
 
     ESP_ERROR_CHECK(iot_button_new_gpio_device(&btn_cfg, &esc_cfg, &s_esc_btn));
-
+    uint32_t lp_ms = 3000;
     // сигнатура вашей функции: (handle, event, event_args, cb, usr_data)
-    ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_PRESS_UP, NULL, esc_btn_cb, NULL));
+    ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_LONG_PRESS_TIME_MS, NULL, esc_btn_cb, &lp_ms));
+
+     ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_LONG_PRESS_START, NULL, esc_long_cb, NULL));
+    ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_PRESS_UP,       NULL, esc_short_up_cb, NULL));
 }
 
 static void ui_back_to_menu_group(void)
@@ -254,27 +294,38 @@ static bool sys_time_get_local(struct tm *out_tm)
 static void ui_time_update_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!s_time_label) return;
 
-    struct tm tm_now;
-    if (!sys_time_get_local(&tm_now)) {
-        lv_label_set_text(s_time_label, "--:--");
+    if (!s_time_label) return;
+    if (!lv_obj_is_valid(s_time_label)) {   // <-- ключевое
+        s_time_label = NULL;
         return;
     }
 
-    char buf[32];
-    // Формат на ваш вкус:
-    // strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_now);
-    strftime(buf, sizeof(buf), "%H:%M %m/%d", &tm_now);
+    time_t now = time(NULL);
+    struct tm lt;
+    localtime_r(&now, &lt);
+
+    char buf[16];
+    strftime(buf, sizeof(buf), "%H:%M", &lt);
     lv_label_set_text(s_time_label, buf);
 }
 
 static void ui_time_init(lv_obj_t *scr)
 {
+    // Если label остался от старого экрана — сбросить
+    if (s_time_label && !lv_obj_is_valid(s_time_label)) {
+        s_time_label = NULL;
+    }
+
+    // Если label есть, но он на другом screen/родителе — пересоздать
+    if (s_time_label && lv_obj_get_parent(s_time_label) != scr) {
+        s_time_label = NULL;
+    }
+
     if (!s_time_label) {
         s_time_label = lv_label_create(scr);
         lv_obj_set_style_text_color(s_time_label, lv_color_white(), 0);
-        lv_obj_set_style_text_font(s_time_label, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(s_time_label, &lv_font_montserrat_14, 0);
         lv_obj_align(s_time_label, LV_ALIGN_TOP_MID, 0, 4);
     }
 
@@ -481,7 +532,7 @@ static void init_panel(void)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = panel_handle,
-        .buffer_size = 320 * 170,
+        .buffer_size = 320 * 170 *2,
         .double_buffer = true,
         .hres = 320,
         .vres = 170,
