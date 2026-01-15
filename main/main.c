@@ -8,6 +8,8 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 
+#include "display/lv_display.h"
+
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
@@ -58,19 +60,14 @@ static const char *TAG = "main";
 #define PIN_CC_GDO0 3
 #define PIN_CC_GDO2 38
 
-
-
-
 // ===== LVGL handles =====
 static lv_disp_t *s_disp = NULL;
 static lv_indev_t *s_encoder = NULL;
 static lv_group_t *menu_group = NULL;
 static button_handle_t s_esc_btn = NULL;
 // Menu data
-    const char *icons[] = { LV_SYMBOL_GPS, LV_SYMBOL_WIFI, LV_SYMBOL_BLUETOOTH, LV_SYMBOL_DRIVE, LV_SYMBOL_SETTINGS };
-    const char *names[] = { "RF", "WiFi", "Bluetooth", "Drive", "Settings" };
-
-
+const char *icons[] = {LV_SYMBOL_GPS, LV_SYMBOL_WIFI, LV_SYMBOL_BLUETOOTH, LV_SYMBOL_DRIVE, LV_SYMBOL_SETTINGS};
+const char *names[] = {"RF", "WiFi", "Bluetooth", "Drive", "Settings"};
 
 // Direction invert if needed
 static const int invert_dir = 0;
@@ -121,9 +118,7 @@ static void esc_btn_cb(void *button_handle, void *usr_data)
     }
 }
 
-
-
-//DISPLAY LED
+// DISPLAY LED
 
 static bool s_backlight_on = true;
 static bool s_ignore_next_up = false;
@@ -136,14 +131,17 @@ static inline void backlight_set(bool on)
 
 static void esc_short_up_cb(void *btn_handle, void *usr_data)
 {
-    (void)btn_handle; (void)usr_data;
+    (void)btn_handle;
+    (void)usr_data;
 
-    if (s_ignore_next_up) { // это отпускание после long-press
+    if (s_ignore_next_up)
+    { // это отпускание после long-press
         s_ignore_next_up = false;
         return;
     }
 
-    if (lvgl_port_lock(0)) {
+    if (lvgl_port_lock(0))
+    {
         ui_back_to_menu_group();
         lvgl_port_unlock();
     }
@@ -151,10 +149,11 @@ static void esc_short_up_cb(void *btn_handle, void *usr_data)
 
 static void esc_long_cb(void *btn_handle, void *usr_data)
 {
-    (void)btn_handle; (void)usr_data;
+    (void)btn_handle;
+    (void)usr_data;
 
-    s_ignore_next_up = true;          // чтобы отпускание не сделало "назад"
-    backlight_set(!s_backlight_on);   // toggle подсветки
+    s_ignore_next_up = true;        // чтобы отпускание не сделало "назад"
+    backlight_set(!s_backlight_on); // toggle подсветки
 }
 //---- DISPLAY LED X ----
 
@@ -171,8 +170,8 @@ static void init_esc_button(void)
     // сигнатура вашей функции: (handle, event, event_args, cb, usr_data)
     ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_LONG_PRESS_TIME_MS, NULL, esc_btn_cb, &lp_ms));
 
-     ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_LONG_PRESS_START, NULL, esc_long_cb, NULL));
-    ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_PRESS_UP,       NULL, esc_short_up_cb, NULL));
+    ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_LONG_PRESS_START, NULL, esc_long_cb, NULL));
+    ESP_ERROR_CHECK(iot_button_register_cb(s_esc_btn, BUTTON_PRESS_UP, NULL, esc_short_up_cb, NULL));
 }
 
 static void ui_back_to_menu_group(void)
@@ -194,10 +193,12 @@ static void ui_back_to_menu_group(void)
 
 static void card_key_cb(lv_event_t *e)
 {
-    if (lv_event_get_code(e) != LV_EVENT_KEY) return;
+    if (lv_event_get_code(e) != LV_EVENT_KEY)
+        return;
 
     uint32_t key = lv_event_get_key(e);
-    if (key != LV_KEY_ENTER) return;
+    if (key != LV_KEY_ENTER)
+        return;
 
     uintptr_t idx = (uintptr_t)lv_event_get_user_data(e);
     ESP_LOGI("UI", "Card  new %u clicked", (unsigned)idx);
@@ -207,19 +208,18 @@ static void card_key_cb(lv_event_t *e)
     // ui_open_submenu(idx); // если у вас есть
 }
 
-
 static lv_style_t s_style_focus;
 static bool s_style_focus_inited = false;
 
 static void focus_style_init_once(void)
 {
-    if (s_style_focus_inited) return;
+    if (s_style_focus_inited)
+        return;
     s_style_focus_inited = true;
 
     lv_style_init(&s_style_focus);
-    lv_style_set_outline_width(&s_style_focus, 6);      // толщина рамки
-    lv_style_set_outline_pad(&s_style_focus, 2);        // “наружу”
-    lv_style_set_outline_color(&s_style_focus, lv_color_make(255, 0, 0)); // Set the color (Red in this case)
+    lv_style_set_outline_width(&s_style_focus, 6); // толщина рамки
+    lv_style_set_outline_pad(&s_style_focus, 2);   // “наружу”
     lv_style_set_outline_opa(&s_style_focus, LV_OPA_COVER);
     // цвет зададим отдельно на каждой карточке (см. ниже), либо оставим общий
 }
@@ -236,18 +236,14 @@ static void card_clicked_cb(lv_event_t *e)
     // open_rf_screen(); / open_wifi_screen(); / open_settings_screen();
 }
 
-
 // Add these globals somewhere near your other UI globals
 static lv_obj_t *s_batt_label = NULL;
 static int batt_proc = 50; // 0..100 (you will update this from your code)
 
-
 //-- time
 
-
-static lv_obj_t   *s_time_label = NULL;
+static lv_obj_t *s_time_label = NULL;
 static lv_timer_t *s_time_timer = NULL;
-
 
 static void set_time_to_2026_01_13_17_00_local(void)
 {
@@ -258,20 +254,21 @@ static void set_time_to_2026_01_13_17_00_local(void)
 
     struct tm t = {0};
     t.tm_year = 2026 - 1900; // годы с 1900
-    t.tm_mon  = 0;           // Jan = 0
+    t.tm_mon = 0;            // Jan = 0
     t.tm_mday = 13;
-    t.tm_hour = 17;          // 5:00 PM = 17:00
-    t.tm_min  = 0;
-    t.tm_sec  = 0;
-    t.tm_isdst = -1;         // пусть libc сама определит DST по TZ
+    t.tm_hour = 17; // 5:00 PM = 17:00
+    t.tm_min = 0;
+    t.tm_sec = 0;
+    t.tm_isdst = -1; // пусть libc сама определит DST по TZ
 
     time_t epoch = mktime(&t);
-    if (epoch == (time_t)-1) {
+    if (epoch == (time_t)-1)
+    {
         ESP_LOGE("TIME", "mktime failed");
         return;
     }
 
-    struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+    struct timeval tv = {.tv_sec = epoch, .tv_usec = 0};
     settimeofday(&tv, NULL);
 
     ESP_LOGI("TIME", "Time set to 2026-01-13 17:00 (local)");
@@ -283,7 +280,8 @@ static bool sys_time_get_local(struct tm *out_tm)
 
     // Если время не выставлено (после холодного старта), now будет маленький
     // Порог можно менять, но этот норм для “время не установлено”
-    if (now < 1700000000) { // ~2023-11
+    if (now < 1700000000)
+    { // ~2023-11
         return false;
     }
 
@@ -295,8 +293,10 @@ static void ui_time_update_cb(lv_timer_t *t)
 {
     (void)t;
 
-    if (!s_time_label) return;
-    if (!lv_obj_is_valid(s_time_label)) {   // <-- ключевое
+    if (!s_time_label)
+        return;
+    if (!lv_obj_is_valid(s_time_label))
+    { // <-- ключевое
         s_time_label = NULL;
         return;
     }
@@ -313,16 +313,19 @@ static void ui_time_update_cb(lv_timer_t *t)
 static void ui_time_init(lv_obj_t *scr)
 {
     // Если label остался от старого экрана — сбросить
-    if (s_time_label && !lv_obj_is_valid(s_time_label)) {
+    if (s_time_label && !lv_obj_is_valid(s_time_label))
+    {
         s_time_label = NULL;
     }
 
     // Если label есть, но он на другом screen/родителе — пересоздать
-    if (s_time_label && lv_obj_get_parent(s_time_label) != scr) {
+    if (s_time_label && lv_obj_get_parent(s_time_label) != scr)
+    {
         s_time_label = NULL;
     }
 
-    if (!s_time_label) {
+    if (!s_time_label)
+    {
         s_time_label = lv_label_create(scr);
         lv_obj_set_style_text_color(s_time_label, lv_color_white(), 0);
         lv_obj_set_style_text_font(s_time_label, &lv_font_montserrat_14, 0);
@@ -331,7 +334,8 @@ static void ui_time_init(lv_obj_t *scr)
 
     ui_time_update_cb(NULL);
 
-    if (!s_time_timer) {
+    if (!s_time_timer)
+    {
         s_time_timer = lv_timer_create(ui_time_update_cb, 1000, NULL);
     }
 }
@@ -339,28 +343,29 @@ static void ui_time_init(lv_obj_t *scr)
 // You can replace this with LV_SYMBOL_BATTERY_FULL etc. later if you want.
 static const char *battery_symbol_from_percent(int pct)
 {
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
+    if (pct < 0)
+        pct = 0;
+    if (pct > 100)
+        pct = 100;
 
     // 5 levels: empty, 1,2,3, full
-    if (pct <= 5)   return LV_SYMBOL_BATTERY_EMPTY;
-    if (pct <= 25)  return LV_SYMBOL_BATTERY_1;
-    if (pct <= 50)  return LV_SYMBOL_BATTERY_2;
-    if (pct <= 75)  return LV_SYMBOL_BATTERY_3;
+    if (pct <= 5)
+        return LV_SYMBOL_BATTERY_EMPTY;
+    if (pct <= 25)
+        return LV_SYMBOL_BATTERY_1;
+    if (pct <= 50)
+        return LV_SYMBOL_BATTERY_2;
+    if (pct <= 75)
+        return LV_SYMBOL_BATTERY_3;
     return LV_SYMBOL_BATTERY_FULL;
 }
 
 static void ui_set_battery_percent(int pct)
 {
-    if (!s_batt_label) return;
+    if (!s_batt_label)
+        return;
     lv_label_set_text(s_batt_label, battery_symbol_from_percent(pct));
-
 }
-
-
-
-
-
 
 static void create_beautiful_menu(void)
 {
@@ -368,7 +373,8 @@ static void create_beautiful_menu(void)
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    if (menu_group == NULL) {
+    if (menu_group == NULL)
+    {
         menu_group = lv_group_create();
         lv_group_set_default(menu_group);
     }
@@ -376,9 +382,9 @@ static void create_beautiful_menu(void)
     const lv_coord_t view_w = 320;
     const lv_coord_t view_h = 170;
 
-    const lv_coord_t card_w = 80;
+    const lv_coord_t card_w = 240;
     const lv_coord_t card_h = 120;
-    const lv_coord_t gap    = 10;
+    const lv_coord_t gap = 10;
 
     lv_obj_t *cont = lv_obj_create(scr);
     lv_obj_set_size(cont, view_w, view_h);
@@ -405,7 +411,7 @@ static void create_beautiful_menu(void)
     // to avoid clipping outline
     lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
-        lv_color_t colors[] = {
+    lv_color_t colors[] = {
         lv_palette_main(LV_PALETTE_RED),
         lv_palette_main(LV_PALETTE_BLUE),
         lv_palette_main(LV_PALETTE_AMBER),
@@ -413,13 +419,12 @@ static void create_beautiful_menu(void)
         lv_palette_main(LV_PALETTE_PURPLE),
     };
 
-    focus_style_init_once();
+    // focus_style_init_once();
 
     // ---------------- Battery (top-right) ----------------
     // Put it on SCR so it doesn't move when cont scrolls
     s_batt_label = lv_label_create(scr);
     lv_obj_set_style_text_color(s_batt_label, lv_color_white(), 0);
-    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_14, 0);
     lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, 0, 4);
     ui_set_battery_percent(batt_proc); // initial draw
     lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_18, 0);
@@ -429,9 +434,25 @@ static void create_beautiful_menu(void)
 
     lv_obj_t *first_card = NULL;
 
-    for (int i = 0; i < 5; i++) {
+    static lv_style_t style_card_common;
+    static bool style_init = false;
+    // create styles for card
+    if (!style_init)
+    {
+        lv_style_init(&style_card_common);
+        lv_style_set_radius(&style_card_common, 12);
+        lv_style_set_bg_color(&style_card_common, lv_color_hex(0x1A1A1A));
+        lv_style_set_bg_opa(&style_card_common, LV_OPA_COVER);
+        lv_style_set_border_width(&style_card_common, 1);
+        lv_style_set_border_color(&style_card_common, lv_color_hex(0x333333));
+        style_init = true;
+    }
+
+    for (int i = 0; i < 5; i++)
+    {
         lv_obj_t *card = lv_btn_create(cont);
-        if (!first_card) first_card = card;
+        if (!first_card)
+            first_card = card;
 
         lv_obj_set_size(card, card_w, card_h);
 
@@ -440,18 +461,12 @@ static void create_beautiful_menu(void)
         lv_obj_set_pos(card, x, y);
 
         // base style
-        lv_obj_set_style_radius(card, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A1A), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-        lv_obj_set_style_border_width(card, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_color(card, lv_color_hex(0x333333), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_opa(card, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_add_style(card, &style_card_common, 0);
 
         // content
         lv_obj_t *lbl_icon = lv_label_create(card);
         lv_label_set_text(lbl_icon, icons[i]);
-        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_36, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(lbl_icon, colors[i], LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 14);
 
@@ -467,14 +482,11 @@ static void create_beautiful_menu(void)
         lv_obj_add_event_cb(card, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
     }
 
-    if (first_card) {
+    if (first_card)
+    {
         lv_group_focus_obj(first_card);
     }
 }
-
-
-
-
 
 // ------------------------- Display init (ваш код) -------------------------
 static void init_display(void)
@@ -491,7 +503,7 @@ static void init_display(void)
     buscfg.sclk_io_num = PIN_NUM_SCLK;
     buscfg.quadwp_io_num = -1;
     buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = LCD_H_RES * 80 * sizeof(uint16_t);
+    buscfg.max_transfer_sz = 320 * 170 * sizeof(uint16_t);
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 }
 
@@ -499,9 +511,10 @@ static void init_panel(void)
 {
     esp_lcd_panel_io_handle_t io_handle = NULL;
 
-      lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_cfg.task_priority = 10;
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
-    
+
     esp_lcd_panel_io_spi_config_t io_config = {};
     io_config.dc_gpio_num = PIN_NUM_DC;
     io_config.cs_gpio_num = PIN_NUM_CS;
@@ -509,30 +522,32 @@ static void init_panel(void)
     io_config.lcd_cmd_bits = 8;
     io_config.lcd_param_bits = 8;
     io_config.spi_mode = 0;
-    io_config.trans_queue_depth = 10;
+    io_config.flags.lsb_first = 0; // Обычный порядок
+    io_config.trans_queue_depth = 20;
 
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &io_handle));
 
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_config = {};
     panel_config.reset_gpio_num = PIN_NUM_RST;
-    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
     panel_config.bits_per_pixel = 16;
+   // esp_lcd_panel_io_tx_param(io_handle, 0x36, (uint8_t[]){0x08}, 1); // Попробуйте 0x00 или 0x08 (BGR)
 
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
     esp_lcd_panel_reset(panel_handle);
     esp_lcd_panel_init(panel_handle);
-    esp_lcd_panel_invert_color(panel_handle, true);
+   esp_lcd_panel_invert_color(panel_handle, true);
     esp_lcd_panel_set_gap(panel_handle, 0, 35);
     esp_lcd_panel_disp_on_off(panel_handle, true);
-
-  
+    //bug fix https://github.com/espressif/esp-idf/issues/11416
+     esp_lcd_panel_io_tx_param(io_handle, 0xb0, (uint8_t[]){0x00, 0xE8}, 2);
 
     // Оставляем вашу структуру (без полей, которых нет в вашем заголовке)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = panel_handle,
-        .buffer_size = 320 * 170 *2,
+        .buffer_size = 320 * 170 ,
         .double_buffer = true,
         .hres = 320,
         .vres = 170,
@@ -542,10 +557,11 @@ static void init_panel(void)
             .mirror_x = false,
             .mirror_y = true,
         },
+       // .color_format = LV_COLOR_FORMAT_RGB565,
+        
         .flags = {
             .buff_spiram = false,
-        }
-    };
+        }};
 
     s_disp = lvgl_port_add_disp(&disp_cfg);
     if (!s_disp)
@@ -565,8 +581,7 @@ static lv_indev_t *init_encoder_via_lvgl_port(void)
     static const button_gpio_config_t encoder_btn_gpio_cfg = {
         .gpio_num = ENCODER_KEY,
         .active_level = 0, // active-low
-        .disable_pull = true
-    };
+        .disable_pull = true};
     const button_config_t btn_cfg = {0};
 
     button_handle_t encoder_btn_handle = NULL;
@@ -603,6 +618,7 @@ void app_main(void)
     init_panel();
 
     init_esc_button();
+    //lv_timer_set_period(s_disp->refr_timer, 10);
 
     if (lvgl_port_lock(0))
     {
@@ -610,7 +626,7 @@ void app_main(void)
         create_beautiful_menu();
 
         // 2) Add encoder indev and bind to group (ONE time)
-     lv_indev_t *enc = init_encoder_via_lvgl_port();
+        lv_indev_t *enc = init_encoder_via_lvgl_port();
 
         lv_indev_set_group(enc, menu_group);
 
