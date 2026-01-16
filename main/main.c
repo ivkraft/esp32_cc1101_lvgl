@@ -1,6 +1,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_pm.h"
+
 
 #include <time.h>
 #include <sys/time.h>
@@ -61,7 +63,7 @@ static const char *TAG = "main";
 #define PIN_CC_GDO2 38
 
 // ===== LVGL handles =====
-static lv_disp_t *s_disp = NULL;
+static lv_display_t *s_disp = NULL;
 static lv_indev_t *s_encoder = NULL;
 static lv_group_t *menu_group = NULL;
 static button_handle_t s_esc_btn = NULL;
@@ -71,6 +73,110 @@ const char *names[] = {"RF", "WiFi", "Bluetooth", "Drive", "Settings"};
 
 // Direction invert if needed
 static const int invert_dir = 0;
+
+//--battary
+
+#include "driver/i2c_master.h"   // ESP-IDF 5.x new driver
+#define GROVE_SDA 8
+#define GROVE_SCL 18
+#define BQ27220_I2C_ADDRESS 0x55
+
+static int batt_proc = 50; // 0..100 (you will update this from your code)
+
+
+static i2c_master_bus_handle_t s_i2c_bus = NULL;
+static i2c_master_dev_handle_t s_bq_dev = NULL;
+#define BQ27220_REG_VOLTAGE        0x08
+#define BQ27220_REG_SOC            0x2C
+
+static void ui_set_battery_percent(int pct);
+
+
+
+static esp_err_t i2c_bq27220_init(void)
+{
+    // I2C bus config (new driver)
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = -1, // auto-select
+        .sda_io_num = (gpio_num_t)GROVE_SDA,
+        .scl_io_num = (gpio_num_t)GROVE_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = false, // обычно внешние подтяжки на Grove уже есть
+    };
+
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &s_i2c_bus));
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = BQ27220_I2C_ADDRESS, // 0x55 (7-bit)
+        .scl_speed_hz    = 400000,              // 100k если будут ошибки
+    };
+
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &s_bq_dev));
+    return ESP_OK;
+}
+
+// read 16-bit little-endian value from Standard Command register
+static esp_err_t bq_read_u16(uint8_t reg, uint16_t *out)
+{
+    uint8_t rx[2] = {0};
+    esp_err_t err = i2c_master_transmit_receive(
+        s_bq_dev,
+        &reg, 1,
+        rx, 2,
+        50 /* timeout ms */
+    );
+    if (err != ESP_OK) return err;
+
+    *out = (uint16_t)rx[0] | ((uint16_t)rx[1] << 8); // LSB,MSB
+    return ESP_OK;
+}
+
+
+static void fuel_gauge_task(void *arg)
+{
+    (void)arg;
+
+    // пробуем стартовать I2C + девайс
+    if (i2c_bq27220_init() != ESP_OK) {
+        ESP_LOGE("BQ27220", "I2C init failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1) {
+        uint16_t soc = 0, mv = 0;
+
+        esp_err_t e1 = bq_read_u16(BQ27220_REG_SOC, &soc);
+        esp_err_t e2 = bq_read_u16(BQ27220_REG_VOLTAGE, &mv);
+
+        if (e1 == ESP_OK) {
+            int pct = (int)soc;
+            if (pct < 0) pct = 0;
+            if (pct > 100) pct = 100;
+            batt_proc = pct;
+        } else {
+            ESP_LOGW("BQ27220", "SOC read err: %s", esp_err_to_name(e1));
+        }
+
+        if (e2 == ESP_OK) {
+            ESP_LOGI("BQ27220", "SOC=%u%%  V=%umV", (unsigned)soc, (unsigned)mv);
+        } else {
+            ESP_LOGW("BQ27220", "V read err: %s", esp_err_to_name(e2));
+        }
+
+        // обновляем UI безопасно через lock
+        if (lvgl_port_lock(0)) {
+            ui_set_battery_percent(batt_proc);
+            lvgl_port_unlock();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+// ---battary X ------
 
 // ------------------------- Power -------------------------
 static void cc1101_power_on(bool on)
@@ -238,7 +344,6 @@ static void card_clicked_cb(lv_event_t *e)
 
 // Add these globals somewhere near your other UI globals
 static lv_obj_t *s_batt_label = NULL;
-static int batt_proc = 50; // 0..100 (you will update this from your code)
 
 //-- time
 
@@ -369,7 +474,7 @@ static void ui_set_battery_percent(int pct)
 
 static void create_beautiful_menu(void)
 {
-    lv_obj_t *scr = lv_disp_get_scr_act(s_disp);
+    lv_obj_t *scr = lv_display_get_screen_active(s_disp);
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
@@ -409,7 +514,7 @@ static void create_beautiful_menu(void)
     lv_obj_set_scroll_snap_y(cont, LV_SCROLL_SNAP_NONE);
 
     // to avoid clipping outline
-    lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  //  lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     lv_color_t colors[] = {
         lv_palette_main(LV_PALETTE_RED),
@@ -503,7 +608,7 @@ static void init_display(void)
     buscfg.sclk_io_num = PIN_NUM_SCLK;
     buscfg.quadwp_io_num = -1;
     buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = 320 * 170 * sizeof(uint16_t);
+    buscfg.max_transfer_sz = 32768;
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 }
 
@@ -514,11 +619,11 @@ static void init_panel(void)
     lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     lvgl_cfg.task_priority = 10;
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
-
+    vTaskDelay(pdMS_TO_TICKS(1));
     esp_lcd_panel_io_spi_config_t io_config = {};
     io_config.dc_gpio_num = PIN_NUM_DC;
     io_config.cs_gpio_num = PIN_NUM_CS;
-    io_config.pclk_hz = 40 * 1000 * 1000;
+    io_config.pclk_hz = 60 * 1000 * 1000;
     io_config.lcd_cmd_bits = 8;
     io_config.lcd_param_bits = 8;
     io_config.spi_mode = 0;
@@ -532,7 +637,6 @@ static void init_panel(void)
     panel_config.reset_gpio_num = PIN_NUM_RST;
     panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
     panel_config.bits_per_pixel = 16;
-   // esp_lcd_panel_io_tx_param(io_handle, 0x36, (uint8_t[]){0x08}, 1); // Попробуйте 0x00 или 0x08 (BGR)
 
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
     esp_lcd_panel_reset(panel_handle);
@@ -610,12 +714,36 @@ static lv_indev_t *init_encoder_via_lvgl_port(void)
     return s_encoder;
 }
 
+
+static void lvgl_set_refresh_ms(lv_display_t *disp, uint32_t ms)
+{
+    lv_timer_t *t = lv_disp_get_refr_timer(disp);   // в v8 это обычно доступно как lv_disp_get_refr_timer()
+    if(t) lv_timer_set_period(t, ms);
+}
+
+static esp_pm_lock_handle_t s_cpu_lock;
+static esp_pm_lock_handle_t s_apb_lock;
+
+static void perf_locks_init(void)
+{
+    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "cpu_max", &s_cpu_lock));
+    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0, "apb_max", &s_apb_lock));
+    ESP_ERROR_CHECK(esp_pm_lock_acquire(s_cpu_lock));
+    ESP_ERROR_CHECK(esp_pm_lock_acquire(s_apb_lock));
+}
+
 // ------------------------- app_main -------------------------
 void app_main(void)
 {
+// perf_locks_init();
+
     set_time_to_2026_01_13_17_00_local();
     init_display();
     init_panel();
+    if (lvgl_port_lock(0)) {
+    lvgl_set_refresh_ms(s_disp, 16); // 16ms ~ 60fps потолок со стороны LVGL
+    lvgl_port_unlock();
+}
 
     init_esc_button();
     //lv_timer_set_period(s_disp->refr_timer, 10);
@@ -670,6 +798,16 @@ void app_main(void)
         5,
         NULL,
         1);
+
+        xTaskCreatePinnedToCore(
+    fuel_gauge_task,
+    "fuel_gauge",
+    4096,
+    NULL,
+    5,
+    NULL,
+    0
+);
 
     ESP_LOGI(TAG, "Decoder task started");
 }
