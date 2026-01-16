@@ -33,6 +33,9 @@
 #include "cc1101_presets.h"
 #include "cc1101_regs.h"
 #include "decoder.h"
+#include "bq27220.h"
+#include "bq25896.h"
+
 
 static const char *TAG = "main";
 
@@ -76,80 +79,47 @@ static const int invert_dir = 0;
 
 //--battary
 
-#include "driver/i2c_master.h"   // ESP-IDF 5.x new driver
-#define GROVE_SDA 8
-#define GROVE_SCL 18
-#define BQ27220_I2C_ADDRESS 0x55
+
+
 
 static int batt_proc = 50; // 0..100 (you will update this from your code)
 
 
-static i2c_master_bus_handle_t s_i2c_bus = NULL;
-static i2c_master_dev_handle_t s_bq_dev = NULL;
-#define BQ27220_REG_VOLTAGE        0x08
-#define BQ27220_REG_SOC            0x2C
-
-static void ui_set_battery_percent(int pct);
+static void ui_set_battery_percent(int pct, bool isCharge);
 
 
 
-static esp_err_t i2c_bq27220_init(void)
-{
-    // I2C bus config (new driver)
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port = -1, // auto-select
-        .sda_io_num = (gpio_num_t)GROVE_SDA,
-        .scl_io_num = (gpio_num_t)GROVE_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = false, // обычно внешние подтяжки на Grove уже есть
-    };
 
-    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &s_i2c_bus));
 
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = BQ27220_I2C_ADDRESS, // 0x55 (7-bit)
-        .scl_speed_hz    = 400000,              // 100k если будут ошибки
-    };
 
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &s_bq_dev));
-    return ESP_OK;
-}
-
-// read 16-bit little-endian value from Standard Command register
-static esp_err_t bq_read_u16(uint8_t reg, uint16_t *out)
-{
-    uint8_t rx[2] = {0};
-    esp_err_t err = i2c_master_transmit_receive(
-        s_bq_dev,
-        &reg, 1,
-        rx, 2,
-        50 /* timeout ms */
-    );
-    if (err != ESP_OK) return err;
-
-    *out = (uint16_t)rx[0] | ((uint16_t)rx[1] << 8); // LSB,MSB
-    return ESP_OK;
-}
 
 
 static void fuel_gauge_task(void *arg)
 {
     (void)arg;
-
+    static bq27220_t bq_cfg;
+    static bq25896_t s_charger;
     // пробуем стартовать I2C + девайс
-    if (i2c_bq27220_init() != ESP_OK) {
+    if (i2c_bq27220_init(&bq_cfg) != ESP_OK) {
         ESP_LOGE("BQ27220", "I2C init failed");
         vTaskDelete(NULL);
         return;
     }
+      if (bq25896_init(&s_charger, bq_cfg.s_i2c_bus) != ESP_OK) {
+        ESP_LOGE("BQ25896", "I2C init failed");
+        vTaskDelete(NULL);
+        return;
+    }
+    //ESP_ERROR_CHECK(bq25896_init(&s_charger, bq_cfg.s_i2c_bus, BQ25896_SLAVE_ADDRESS, 400000));
+
+     bool orange;
+            bq25896_status_t st;
 
     while (1) {
         uint16_t soc = 0, mv = 0;
 
-        esp_err_t e1 = bq_read_u16(BQ27220_REG_SOC, &soc);
-        esp_err_t e2 = bq_read_u16(BQ27220_REG_VOLTAGE, &mv);
+        esp_err_t e1 = bq_read_u16(BQ27220_REG_SOC, &soc,&bq_cfg);
+        esp_err_t e2 = bq_read_u16(BQ27220_REG_VOLTAGE, &mv,&bq_cfg);
 
         if (e1 == ESP_OK) {
             int pct = (int)soc;
@@ -165,10 +135,16 @@ static void fuel_gauge_task(void *arg)
         } else {
             ESP_LOGW("BQ27220", "V read err: %s", esp_err_to_name(e2));
         }
+   
 
         // обновляем UI безопасно через lock
         if (lvgl_port_lock(0)) {
-            ui_set_battery_percent(batt_proc);
+            if (bq25896_get_status(&s_charger, &st) == ESP_OK)
+                 {
+                 orange = bq25896_is_charging_active(&st); 
+                 ui_set_battery_percent(batt_proc,orange);
+                }
+
             lvgl_port_unlock();
         }
 
@@ -465,11 +441,16 @@ static const char *battery_symbol_from_percent(int pct)
     return LV_SYMBOL_BATTERY_FULL;
 }
 
-static void ui_set_battery_percent(int pct)
+static void ui_set_battery_percent(int pct, bool isCharge)
 {
     if (!s_batt_label)
         return;
     lv_label_set_text(s_batt_label, battery_symbol_from_percent(pct));
+     lv_obj_set_style_text_color(
+            s_batt_label,
+            isCharge ? lv_color_hex(0x00A5FF) : lv_color_white(),
+            0
+        );
 }
 
 static void create_beautiful_menu(void)
@@ -531,7 +512,7 @@ static void create_beautiful_menu(void)
     s_batt_label = lv_label_create(scr);
     lv_obj_set_style_text_color(s_batt_label, lv_color_white(), 0);
     lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, 0, 4);
-    ui_set_battery_percent(batt_proc); // initial draw
+    ui_set_battery_percent(batt_proc,false); // initial draw
     lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_18, 0);
     // ---------------- Time (top-center) ----------------
     ui_time_init(scr);
