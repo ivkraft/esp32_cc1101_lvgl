@@ -26,7 +26,12 @@
     };
 
     ESP_ERROR_CHECK(i2c_master_bus_add_device(cfg->s_i2c_bus, &dev_cfg, &cfg->s_bq_dev));
+
+
+
     return ESP_OK;
+
+
 }
 
 // read 16-bit little-endian value from Standard Command register
@@ -43,4 +48,15 @@
 
     *out = (uint16_t)rx[0] | ((uint16_t)rx[1] << 8); // LSB,MSB
     return ESP_OK;
+}
+
+esp_err_t bq_write_subcmd(uint16_t subcmd, bq27220_t *cfg)
+{
+    // Формируем пакет: [регистр 0x3E] [LSB команды] [MSB команды]
+    uint8_t tx[3];
+    tx[0] = 0x3E; // Control() register
+    tx[1] = (uint8_t)(subcmd & 0x00FF);
+    tx[2] = (uint8_t)((subcmd >> 8) & 0x00FF);
+
+    return i2c_master_transmit(cfg->s_bq_dev, tx, 3, 50);
 }

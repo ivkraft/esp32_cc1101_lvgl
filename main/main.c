@@ -2,7 +2,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_pm.h"
-
+#include "esp_check.h"
 
 #include <time.h>
 #include <sys/time.h>
@@ -35,7 +35,6 @@
 #include "decoder.h"
 #include "bq27220.h"
 #include "bq25896.h"
-
 
 static const char *TAG = "main";
 
@@ -79,20 +78,9 @@ static const int invert_dir = 0;
 
 //--battary
 
-
-
-
 static int batt_proc = 50; // 0..100 (you will update this from your code)
 
-
 static void ui_set_battery_percent(int pct, bool isCharge);
-
-
-
-
-
-
-
 
 static void fuel_gauge_task(void *arg)
 {
@@ -100,50 +88,95 @@ static void fuel_gauge_task(void *arg)
     static bq27220_t bq_cfg;
     static bq25896_t s_charger;
     // пробуем стартовать I2C + девайс
-    if (i2c_bq27220_init(&bq_cfg) != ESP_OK) {
+    if (i2c_bq27220_init(&bq_cfg) != ESP_OK)
+    {
         ESP_LOGE("BQ27220", "I2C init failed");
         vTaskDelete(NULL);
         return;
     }
-      if (bq25896_init(&s_charger, bq_cfg.s_i2c_bus) != ESP_OK) {
+    else
+    {
+        ESP_LOGI("BQ27220", "Sending Soft Reset to recalibrate SOC...");
+        bq_write_subcmd(0x0042, &bq_cfg);
+        vTaskDelay(pdMS_TO_TICKS(500)); // Даем время чипу очнуться
+
+    }
+
+    if (bq25896_init(&s_charger, bq_cfg.s_i2c_bus) != ESP_OK)
+    {
         ESP_LOGE("BQ25896", "I2C init failed");
         vTaskDelete(NULL);
         return;
     }
-    //ESP_ERROR_CHECK(bq25896_init(&s_charger, bq_cfg.s_i2c_bus, BQ25896_SLAVE_ADDRESS, 400000));
+    else
+    {
+        ESP_LOGI(TAG, "Configuring BQ25896...");
 
-     bool orange;
-            bq25896_status_t st;
+        // Используем простую проверку, чтобы не "падать"
+        if (bq25896_write_reg(&s_charger, 0x03, 0x1A) != ESP_OK)
+            ESP_LOGE(TAG, "WD fix failed");
+        if (bq25896_write_reg(&s_charger, 0x00, 0x28) != ESP_OK)
+            ESP_LOGE(TAG, "IINLIM fix failed");
+        if (bq25896_write_reg(&s_charger, 0x04, 0x10) != ESP_OK)
+            ESP_LOGE(TAG, "ICHG fix failed");
+        if (bq25896_write_reg(&s_charger, 0x06, 0x5E) != ESP_OK)
+            ESP_LOGE(TAG, "VREG fix failed");
+    }
+    // ESP_ERROR_CHECK(bq25896_init(&s_charger, bq_cfg.s_i2c_bus, BQ25896_SLAVE_ADDRESS, 400000));
 
-    while (1) {
+    bool orange;
+    bq25896_status_t st;
+
+    while (1)
+    {
         uint16_t soc = 0, mv = 0;
 
-        esp_err_t e1 = bq_read_u16(BQ27220_REG_SOC, &soc,&bq_cfg);
-        esp_err_t e2 = bq_read_u16(BQ27220_REG_VOLTAGE, &mv,&bq_cfg);
+        esp_err_t e1 = bq_read_u16(BQ27220_REG_SOC, &soc, &bq_cfg);
+        esp_err_t e2 = bq_read_u16(BQ27220_REG_VOLTAGE, &mv, &bq_cfg);
 
-        if (e1 == ESP_OK) {
+        if (e1 == ESP_OK)
+        {
             int pct = (int)soc;
-            if (pct < 0) pct = 0;
-            if (pct > 100) pct = 100;
+            if (pct < 0)
+                pct = 0;
+            if (pct > 100)
+                pct = 100;
             batt_proc = pct;
-        } else {
+        }
+        else
+        {
             ESP_LOGW("BQ27220", "SOC read err: %s", esp_err_to_name(e1));
         }
 
-        if (e2 == ESP_OK) {
+        if (e2 == ESP_OK)
+        {
             ESP_LOGI("BQ27220", "SOC=%u%%  V=%umV", (unsigned)soc, (unsigned)mv);
-        } else {
+        }
+        else
+        {
             ESP_LOGW("BQ27220", "V read err: %s", esp_err_to_name(e2));
         }
-   
+
+        uint8_t fault_reg = 0;
+        bq25896_read_reg(&s_charger, 0x0C, &fault_reg);
+        ESP_LOGI("BQ25896", "Fault Register: 0x%02X", fault_reg);
+
+        // Попробуй прочитать регистр REG12 (Charge Current Measurement)
+        uint8_t ichg_raw = 0;
+        bq25896_read_reg(&s_charger, 0x12, &ichg_raw);
+        // Каждый бит равен 50мА (примерно)
+        int current_ma = (ichg_raw & 0x7F) * 50;
+        ESP_LOGI("DEBUG", "Real Charge Current: %d mA", current_ma);
+
+        orange = bq25896_is_charging_active(&st);
 
         // обновляем UI безопасно через lock
-        if (lvgl_port_lock(0)) {
+        if (lvgl_port_lock(0))
+        {
             if (bq25896_get_status(&s_charger, &st) == ESP_OK)
-                 {
-                 orange = bq25896_is_charging_active(&st); 
-                 ui_set_battery_percent(batt_proc,orange);
-                }
+            {
+                ui_set_battery_percent(batt_proc, orange);
+            }
 
             lvgl_port_unlock();
         }
@@ -293,19 +326,6 @@ static void card_key_cb(lv_event_t *e)
 static lv_style_t s_style_focus;
 static bool s_style_focus_inited = false;
 
-static void focus_style_init_once(void)
-{
-    if (s_style_focus_inited)
-        return;
-    s_style_focus_inited = true;
-
-    lv_style_init(&s_style_focus);
-    lv_style_set_outline_width(&s_style_focus, 6); // толщина рамки
-    lv_style_set_outline_pad(&s_style_focus, 2);   // “наружу”
-    lv_style_set_outline_opa(&s_style_focus, LV_OPA_COVER);
-    // цвет зададим отдельно на каждой карточке (см. ниже), либо оставим общий
-}
-
 static void card_clicked_cb(lv_event_t *e)
 {
     lv_obj_t *card = lv_event_get_target(e);
@@ -446,56 +466,141 @@ static void ui_set_battery_percent(int pct, bool isCharge)
     if (!s_batt_label)
         return;
     lv_label_set_text(s_batt_label, battery_symbol_from_percent(pct));
-     lv_obj_set_style_text_color(
-            s_batt_label,
-            isCharge ? lv_color_hex(0x00A5FF) : lv_color_white(),
-            0
-        );
+    lv_obj_set_style_text_color(
+        s_batt_label,
+        isCharge ? lv_color_hex(0xA5FF00) : lv_color_white(),
+        0);
 }
+
+lv_obj_t *cont;
+
+// static void create_beautiful_menu(void)
+// {
+//     lv_obj_t *scr = lv_display_get_screen_active(s_disp);
+//     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
+//     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+//     if (menu_group == NULL)
+//     {
+//         menu_group = lv_group_create();
+//         lv_group_set_default(menu_group);
+//     }
+
+//     const lv_coord_t view_w = 320;
+//     const lv_coord_t view_h = 170;
+
+//     const lv_coord_t card_w = 240;
+//     const lv_coord_t card_h = 120;
+//     const lv_coord_t gap = 10;
+
+//     cont = lv_obj_create(scr);
+//     lv_obj_set_size(cont, view_w, view_h);
+//     lv_obj_center(cont);
+
+//     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+//     lv_obj_set_style_border_opa(cont, LV_OPA_TRANSP, 0);
+
+//     lv_obj_set_style_pad_top(cont, 10, 0);
+//     lv_obj_set_style_pad_bottom(cont, 0, 0);
+
+//     lv_coord_t side_pad = (view_w - card_w) / 2;
+//     lv_obj_set_style_pad_left(cont, side_pad, 0);
+//     lv_obj_set_style_pad_right(cont, side_pad, 0);
+
+//     lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+//     lv_obj_set_scroll_dir(cont, LV_DIR_HOR);
+//     lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
+
+//     lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+//     lv_obj_set_scroll_snap_x(cont, LV_SCROLL_SNAP_CENTER);
+//     lv_obj_set_scroll_snap_y(cont, LV_SCROLL_SNAP_NONE);
+
+//     // to avoid clipping outline
+//     //  lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+
+//     lv_color_t colors[] = {
+//         lv_palette_main(LV_PALETTE_RED),
+//         lv_palette_main(LV_PALETTE_BLUE),
+//         lv_palette_main(LV_PALETTE_AMBER),
+//         lv_palette_main(LV_PALETTE_GREEN),
+//         lv_palette_main(LV_PALETTE_PURPLE),
+//     };
+
+//     // focus_style_init_once();
+
+//     // ---------------- Battery (top-right) ----------------
+//     // Put it on SCR so it doesn't move when cont scrolls
+//     s_batt_label = lv_label_create(scr);
+//     lv_obj_set_style_text_color(s_batt_label, lv_color_white(), 0);
+//     lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, 0, 4);
+//     ui_set_battery_percent(batt_proc, false); // initial draw
+//     lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_18, 0);
+
+//     // ---------------- Time (top-center) ----------------
+//     // ui_time_init(scr);
+//     // -----------------------------------------------------
+
+//     lv_obj_t *first_card = NULL;
+
+//     static lv_style_t style_card_common;
+//     static bool style_init = false;
+//     // create styles for card
+//     if (!style_init)
+//     {
+//         lv_style_init(&style_card_common);
+//        // lv_style_set_radius(&style_card_common, 12);
+//         lv_style_set_bg_color(&style_card_common, lv_color_hex(0x1A1A1A));
+//        // lv_style_set_bg_opa(&style_card_common, LV_OPA_COVER);
+//      //   lv_style_set_border_width(&style_card_common, 1);
+//      //   lv_style_set_border_color(&style_card_common, lv_color_hex(0x333333));
+//         style_init = true;
+//     }
+
+//     for (int i = 0; i < 5; i++)
+//     {
+//         lv_obj_t *card = lv_btn_create(cont);
+//         if (!first_card)
+//             first_card = card;
+
+//         lv_obj_set_size(card, card_w, card_h);
+
+//         lv_coord_t x = i * (card_w + gap);
+//         lv_coord_t y = (view_h - card_h) / 2;
+//         lv_obj_set_pos(card, x, y);
+
+//         // base style
+//         lv_obj_add_style(card, &style_card_common, 0);
+
+//         // content
+//         lv_obj_t *lbl_icon = lv_label_create(card);
+//         lv_label_set_text(lbl_icon, icons[i]);
+//         lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
+//         lv_obj_set_style_text_color(lbl_icon, colors[i], LV_PART_MAIN | LV_STATE_DEFAULT);
+//         lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 14);
+
+//         lv_obj_t *lbl_name = lv_label_create(card);
+//         lv_label_set_text(lbl_name, names[i]);
+//         lv_obj_set_style_text_color(lbl_name, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+//         lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -10);
+
+//         // focus outline (encoder/keypad): LV_STATE_FOCUS_KEY
+//         lv_obj_add_style(card, &s_style_focus, LV_STATE_FOCUS_KEY);
+//         lv_obj_set_style_anim_time(card, 0, 0);
+
+//         lv_group_add_obj(menu_group, card);
+//         lv_obj_add_event_cb(card, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+//     }
+
+//     if (first_card)
+//     {
+//         lv_group_focus_obj(first_card);
+//     }
+// }
 
 static void create_beautiful_menu(void)
 {
     lv_obj_t *scr = lv_display_get_screen_active(s_disp);
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-
-    if (menu_group == NULL)
-    {
-        menu_group = lv_group_create();
-        lv_group_set_default(menu_group);
-    }
-
-    const lv_coord_t view_w = 320;
-    const lv_coord_t view_h = 170;
-
-    const lv_coord_t card_w = 240;
-    const lv_coord_t card_h = 120;
-    const lv_coord_t gap = 10;
-
-    lv_obj_t *cont = lv_obj_create(scr);
-    lv_obj_set_size(cont, view_w, view_h);
-    lv_obj_center(cont);
-
-    lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_opa(cont, LV_OPA_TRANSP, 0);
-
-    lv_obj_set_style_pad_top(cont, 10, 0);
-    lv_obj_set_style_pad_bottom(cont, 0, 0);
-
-    lv_coord_t side_pad = (view_w - card_w) / 2;
-    lv_obj_set_style_pad_left(cont, side_pad, 0);
-    lv_obj_set_style_pad_right(cont, side_pad, 0);
-
-    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(cont, LV_DIR_HOR);
-    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
-
-    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-    lv_obj_set_scroll_snap_x(cont, LV_SCROLL_SNAP_CENTER);
-    lv_obj_set_scroll_snap_y(cont, LV_SCROLL_SNAP_NONE);
-
-    // to avoid clipping outline
-  //  lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     lv_color_t colors[] = {
         lv_palette_main(LV_PALETTE_RED),
@@ -505,72 +610,71 @@ static void create_beautiful_menu(void)
         lv_palette_main(LV_PALETTE_PURPLE),
     };
 
-    // focus_style_init_once();
+    if (menu_group == NULL)
+    {
+        menu_group = lv_group_create();
+        lv_group_set_default(menu_group);
+    }
 
-    // ---------------- Battery (top-right) ----------------
-    // Put it on SCR so it doesn't move when cont scrolls
+    // Удаляем старый статус-бар если был, и создаем заново
     s_batt_label = lv_label_create(scr);
     lv_obj_set_style_text_color(s_batt_label, lv_color_white(), 0);
-    lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, 0, 4);
-    ui_set_battery_percent(batt_proc,false); // initial draw
-    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_18, 0);
-    // ---------------- Time (top-center) ----------------
-    ui_time_init(scr);
-    // -----------------------------------------------------
+    lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, -10, 5);
+    ui_set_battery_percent(batt_proc, false);
 
-    lv_obj_t *first_card = NULL;
+    // Геометрия плиток
+    const int tile_w = 90;
+    const int tile_h = 65;
+    const int start_x = 15;
+    const int start_y = 25;
+    const int gap_x = 10;
+    const int gap_y = 10;
 
-    static lv_style_t style_card_common;
-    static bool style_init = false;
-    // create styles for card
-    if (!style_init)
+    static lv_style_t style_tile;
+    static bool style_inited = false;
+    if (!style_inited)
     {
-        lv_style_init(&style_card_common);
-        lv_style_set_radius(&style_card_common, 12);
-        lv_style_set_bg_color(&style_card_common, lv_color_hex(0x1A1A1A));
-        lv_style_set_bg_opa(&style_card_common, LV_OPA_COVER);
-        lv_style_set_border_width(&style_card_common, 1);
-        lv_style_set_border_color(&style_card_common, lv_color_hex(0x333333));
-        style_init = true;
+        lv_style_init(&style_tile);
+        lv_style_set_bg_color(&style_tile, lv_color_hex(0x1A1A1A));
+        lv_style_set_bg_opa(&style_tile, LV_OPA_COVER);
+        lv_style_set_border_width(&style_tile, 1);
+        lv_style_set_border_color(&style_tile, lv_color_hex(0x333333));
+        lv_style_set_radius(&style_tile, 8); // Можно оставить небольшим
+
+        // Стиль фокуса
+        lv_style_init(&s_style_focus);
+        lv_style_set_border_color(&s_style_focus, lv_palette_main(LV_PALETTE_BLUE));
+        lv_style_set_border_width(&s_style_focus, 3);
+        style_inited = true;
     }
 
     for (int i = 0; i < 5; i++)
     {
-        lv_obj_t *card = lv_btn_create(cont);
-        if (!first_card)
-            first_card = card;
+        lv_obj_t *tile = lv_btn_create(scr); // Прямо на экран!
 
-        lv_obj_set_size(card, card_w, card_h);
+        // Рассчитываем позицию (3 в ряд)
+        int row = i / 3;
+        int col = i % 3;
+        lv_obj_set_size(tile, tile_w, tile_h);
+        lv_obj_set_pos(tile, start_x + col * (tile_w + gap_x), start_y + row * (tile_h + gap_y));
 
-        lv_coord_t x = i * (card_w + gap);
-        lv_coord_t y = (view_h - card_h) / 2;
-        lv_obj_set_pos(card, x, y);
+        lv_obj_add_style(tile, &style_tile, 0);
+        lv_obj_add_style(tile, &s_style_focus, LV_STATE_FOCUSED);
 
-        // base style
-        lv_obj_add_style(card, &style_card_common, 0);
-
-        // content
-        lv_obj_t *lbl_icon = lv_label_create(card);
+        // Контент плитки
+        lv_obj_t *lbl_icon = lv_label_create(tile);
         lv_label_set_text(lbl_icon, icons[i]);
-        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_text_color(lbl_icon, colors[i], LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 14);
+        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(lbl_icon, colors[i], 0);
+        lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 5);
 
-        lv_obj_t *lbl_name = lv_label_create(card);
+        lv_obj_t *lbl_name = lv_label_create(tile);
         lv_label_set_text(lbl_name, names[i]);
-        lv_obj_set_style_text_color(lbl_name, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_12, 0);
+        lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -5);
 
-        // focus outline (encoder/keypad): LV_STATE_FOCUS_KEY
-        lv_obj_add_style(card, &s_style_focus, LV_STATE_FOCUS_KEY);
-
-        lv_group_add_obj(menu_group, card);
-        lv_obj_add_event_cb(card, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
-    }
-
-    if (first_card)
-    {
-        lv_group_focus_obj(first_card);
+        lv_group_add_obj(menu_group, tile);
+        lv_obj_add_event_cb(tile, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
     }
 }
 
@@ -589,7 +693,7 @@ static void init_display(void)
     buscfg.sclk_io_num = PIN_NUM_SCLK;
     buscfg.quadwp_io_num = -1;
     buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = 32768;
+    buscfg.max_transfer_sz = 64 * 1024;
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 }
 
@@ -599,12 +703,13 @@ static void init_panel(void)
 
     lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     lvgl_cfg.task_priority = 10;
+    lvgl_cfg.task_stack = 8192;
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
     vTaskDelay(pdMS_TO_TICKS(1));
     esp_lcd_panel_io_spi_config_t io_config = {};
     io_config.dc_gpio_num = PIN_NUM_DC;
     io_config.cs_gpio_num = PIN_NUM_CS;
-    io_config.pclk_hz = 60 * 1000 * 1000;
+    io_config.pclk_hz = 80 * 1000 * 1000;
     io_config.lcd_cmd_bits = 8;
     io_config.lcd_param_bits = 8;
     io_config.spi_mode = 0;
@@ -616,36 +721,40 @@ static void init_panel(void)
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_config = {};
     panel_config.reset_gpio_num = PIN_NUM_RST;
-    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
+    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
     panel_config.bits_per_pixel = 16;
 
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
     esp_lcd_panel_reset(panel_handle);
     esp_lcd_panel_init(panel_handle);
-   esp_lcd_panel_invert_color(panel_handle, true);
+    esp_lcd_panel_invert_color(panel_handle, true);
     esp_lcd_panel_set_gap(panel_handle, 0, 35);
+    // bug fix https://github.com/espressif/esp-idf/issues/11416
+
+    esp_lcd_panel_io_tx_param(io_handle, 0xb0, (uint8_t[]){0x00, 0xE8}, 2);
+
     esp_lcd_panel_disp_on_off(panel_handle, true);
-    //bug fix https://github.com/espressif/esp-idf/issues/11416
-     esp_lcd_panel_io_tx_param(io_handle, 0xb0, (uint8_t[]){0x00, 0xE8}, 2);
 
     // Оставляем вашу структуру (без полей, которых нет в вашем заголовке)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = panel_handle,
-        .buffer_size = 320 * 170 ,
+        .buffer_size = 320 * 40,
         .double_buffer = true,
         .hres = 320,
         .vres = 170,
+
         .monochrome = false,
         .rotation = {
             .swap_xy = true,
             .mirror_x = false,
             .mirror_y = true,
         },
-       // .color_format = LV_COLOR_FORMAT_RGB565,
-        
+        // .color_format = LV_COLOR_FORMAT_RGB565,
+
         .flags = {
             .buff_spiram = false,
+            .buff_dma = true,
         }};
 
     s_disp = lvgl_port_add_disp(&disp_cfg);
@@ -695,39 +804,16 @@ static lv_indev_t *init_encoder_via_lvgl_port(void)
     return s_encoder;
 }
 
-
-static void lvgl_set_refresh_ms(lv_display_t *disp, uint32_t ms)
-{
-    lv_timer_t *t = lv_disp_get_refr_timer(disp);   // в v8 это обычно доступно как lv_disp_get_refr_timer()
-    if(t) lv_timer_set_period(t, ms);
-}
-
-static esp_pm_lock_handle_t s_cpu_lock;
-static esp_pm_lock_handle_t s_apb_lock;
-
-static void perf_locks_init(void)
-{
-    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "cpu_max", &s_cpu_lock));
-    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0, "apb_max", &s_apb_lock));
-    ESP_ERROR_CHECK(esp_pm_lock_acquire(s_cpu_lock));
-    ESP_ERROR_CHECK(esp_pm_lock_acquire(s_apb_lock));
-}
-
 // ------------------------- app_main -------------------------
 void app_main(void)
 {
-// perf_locks_init();
 
     set_time_to_2026_01_13_17_00_local();
     init_display();
     init_panel();
-    if (lvgl_port_lock(0)) {
-    lvgl_set_refresh_ms(s_disp, 16); // 16ms ~ 60fps потолок со стороны LVGL
-    lvgl_port_unlock();
-}
 
     init_esc_button();
-    //lv_timer_set_period(s_disp->refr_timer, 10);
+    // lv_timer_set_period(s_disp->refr_timer, 10);
 
     if (lvgl_port_lock(0))
     {
@@ -771,24 +857,23 @@ void app_main(void)
     ESP_ERROR_CHECK(cc1101_enter_rx(&cc));
     vTaskDelay(pdMS_TO_TICKS(40));
 
+    // xTaskCreatePinnedToCore(
+    //     rmt_rx_loop_task,
+    //     "rmt_decoder",
+    //     4096,
+    //     NULL,
+    //     5,
+    //     NULL,
+    //     1);
+
     xTaskCreatePinnedToCore(
-        rmt_rx_loop_task,
-        "rmt_decoder",
+        fuel_gauge_task,
+        "fuel_gauge",
         4096,
         NULL,
         5,
         NULL,
-        1);
+        0);
 
-        xTaskCreatePinnedToCore(
-    fuel_gauge_task,
-    "fuel_gauge",
-    4096,
-    NULL,
-    5,
-    NULL,
-    0
-);
-
-    ESP_LOGI(TAG, "Decoder task started");
+    // ESP_LOGI(TAG, "Decoder task started");
 }
