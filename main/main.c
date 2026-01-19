@@ -161,12 +161,35 @@ static void fuel_gauge_task(void *arg)
         bq25896_read_reg(&s_charger, 0x0C, &fault_reg);
         ESP_LOGI("BQ25896", "Fault Register: 0x%02X", fault_reg);
 
-        // Попробуй прочитать регистр REG12 (Charge Current Measurement)
+  // --- СЕКЦИЯ ПОДДЕРЖАНИЯ ЗАРЯДКИ ---
+        // Каждые 2 секунды принудительно гасим Watchdog и ставим лимиты
+        // Это "костыль", который лечит любые сбросы чипа
+        bq25896_write_reg(&s_charger, 0x03, 0x1A); // WD off + Charge Enable
+        bq25896_write_reg(&s_charger, 0x00, 0x28); // IINLIM 2A
+        
+        // Запускаем конверсию АЦП, чтобы видеть актуальный ток
+        // REG02: бит 7 (CONV_START)
+        uint8_t reg02 = 0;
+        bq25896_read_reg(&s_charger, 0x02, &reg02);
+        bq25896_write_reg(&s_charger, 0x02, reg02 | 0x80); 
+
+        // --- СЕКЦИЯ ЧТЕНИЯ ДАННЫХ ---
+        uint16_t soc1 = 0;
+        uint16_t mv1 = 0;
+        bq25896_status_t st;
         uint8_t ichg_raw = 0;
+
+        bq_read_u16(BQ27220_REG_SOC, &soc1, &bq_cfg);
+        bq_read_u16(BQ27220_REG_VOLTAGE, &mv1, &bq_cfg);
+        bq25896_get_status(&s_charger, &st);
         bq25896_read_reg(&s_charger, 0x12, &ichg_raw);
-        // Каждый бит равен 50мА (примерно)
+        
+        uint8_t fault = 0;
+        bq25896_read_reg(&s_charger, 0x0C, &fault);
+
         int current_ma = (ichg_raw & 0x7F) * 50;
-        ESP_LOGI("DEBUG", "Real Charge Current: %d mA", current_ma);
+
+        ESP_LOGI(TAG, "SOC=%d%% V=%dmV Fault=0x%02X Current=%dmA", soc1, mv1, fault, current_ma);
 
         orange = bq25896_is_charging_active(&st);
 
@@ -474,133 +497,49 @@ static void ui_set_battery_percent(int pct, bool isCharge)
 
 lv_obj_t *cont;
 
-// static void create_beautiful_menu(void)
-// {
-//     lv_obj_t *scr = lv_display_get_screen_active(s_disp);
-//     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
-//     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-
-//     if (menu_group == NULL)
-//     {
-//         menu_group = lv_group_create();
-//         lv_group_set_default(menu_group);
-//     }
-
-//     const lv_coord_t view_w = 320;
-//     const lv_coord_t view_h = 170;
-
-//     const lv_coord_t card_w = 240;
-//     const lv_coord_t card_h = 120;
-//     const lv_coord_t gap = 10;
-
-//     cont = lv_obj_create(scr);
-//     lv_obj_set_size(cont, view_w, view_h);
-//     lv_obj_center(cont);
-
-//     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
-//     lv_obj_set_style_border_opa(cont, LV_OPA_TRANSP, 0);
-
-//     lv_obj_set_style_pad_top(cont, 10, 0);
-//     lv_obj_set_style_pad_bottom(cont, 0, 0);
-
-//     lv_coord_t side_pad = (view_w - card_w) / 2;
-//     lv_obj_set_style_pad_left(cont, side_pad, 0);
-//     lv_obj_set_style_pad_right(cont, side_pad, 0);
-
-//     lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-//     lv_obj_set_scroll_dir(cont, LV_DIR_HOR);
-//     lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
-
-//     lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-//     lv_obj_set_scroll_snap_x(cont, LV_SCROLL_SNAP_CENTER);
-//     lv_obj_set_scroll_snap_y(cont, LV_SCROLL_SNAP_NONE);
-
-//     // to avoid clipping outline
-//     //  lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-
-//     lv_color_t colors[] = {
-//         lv_palette_main(LV_PALETTE_RED),
-//         lv_palette_main(LV_PALETTE_BLUE),
-//         lv_palette_main(LV_PALETTE_AMBER),
-//         lv_palette_main(LV_PALETTE_GREEN),
-//         lv_palette_main(LV_PALETTE_PURPLE),
-//     };
-
-//     // focus_style_init_once();
-
-//     // ---------------- Battery (top-right) ----------------
-//     // Put it on SCR so it doesn't move when cont scrolls
-//     s_batt_label = lv_label_create(scr);
-//     lv_obj_set_style_text_color(s_batt_label, lv_color_white(), 0);
-//     lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, 0, 4);
-//     ui_set_battery_percent(batt_proc, false); // initial draw
-//     lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_18, 0);
-
-//     // ---------------- Time (top-center) ----------------
-//     // ui_time_init(scr);
-//     // -----------------------------------------------------
-
-//     lv_obj_t *first_card = NULL;
-
-//     static lv_style_t style_card_common;
-//     static bool style_init = false;
-//     // create styles for card
-//     if (!style_init)
-//     {
-//         lv_style_init(&style_card_common);
-//        // lv_style_set_radius(&style_card_common, 12);
-//         lv_style_set_bg_color(&style_card_common, lv_color_hex(0x1A1A1A));
-//        // lv_style_set_bg_opa(&style_card_common, LV_OPA_COVER);
-//      //   lv_style_set_border_width(&style_card_common, 1);
-//      //   lv_style_set_border_color(&style_card_common, lv_color_hex(0x333333));
-//         style_init = true;
-//     }
-
-//     for (int i = 0; i < 5; i++)
-//     {
-//         lv_obj_t *card = lv_btn_create(cont);
-//         if (!first_card)
-//             first_card = card;
-
-//         lv_obj_set_size(card, card_w, card_h);
-
-//         lv_coord_t x = i * (card_w + gap);
-//         lv_coord_t y = (view_h - card_h) / 2;
-//         lv_obj_set_pos(card, x, y);
-
-//         // base style
-//         lv_obj_add_style(card, &style_card_common, 0);
-
-//         // content
-//         lv_obj_t *lbl_icon = lv_label_create(card);
-//         lv_label_set_text(lbl_icon, icons[i]);
-//         lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
-//         lv_obj_set_style_text_color(lbl_icon, colors[i], LV_PART_MAIN | LV_STATE_DEFAULT);
-//         lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 14);
-
-//         lv_obj_t *lbl_name = lv_label_create(card);
-//         lv_label_set_text(lbl_name, names[i]);
-//         lv_obj_set_style_text_color(lbl_name, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
-//         lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -10);
-
-//         // focus outline (encoder/keypad): LV_STATE_FOCUS_KEY
-//         lv_obj_add_style(card, &s_style_focus, LV_STATE_FOCUS_KEY);
-//         lv_obj_set_style_anim_time(card, 0, 0);
-
-//         lv_group_add_obj(menu_group, card);
-//         lv_obj_add_event_cb(card, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
-//     }
-
-//     if (first_card)
-//     {
-//         lv_group_focus_obj(first_card);
-//     }
-// }
-
 static void create_beautiful_menu(void)
 {
     lv_obj_t *scr = lv_display_get_screen_active(s_disp);
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+    if (menu_group == NULL)
+    {
+        menu_group = lv_group_create();
+        lv_group_set_default(menu_group);
+    }
+
+    const lv_coord_t view_w = 320;
+    const lv_coord_t view_h = 170;
+
+    const lv_coord_t card_w = 240;
+    const lv_coord_t card_h = 120;
+    const lv_coord_t gap = 10;
+
+    cont = lv_obj_create(scr);
+    lv_obj_set_size(cont, view_w, view_h);
+    lv_obj_center(cont);
+
+    lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_opa(cont, LV_OPA_TRANSP, 0);
+
+    lv_obj_set_style_pad_top(cont, 10, 0);
+    lv_obj_set_style_pad_bottom(cont, 0, 0);
+
+    lv_coord_t side_pad = (view_w - card_w) / 2;
+    lv_obj_set_style_pad_left(cont, side_pad, 0);
+    lv_obj_set_style_pad_right(cont, side_pad, 0);
+
+    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(cont, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+    lv_obj_set_scroll_snap_x(cont, LV_SCROLL_SNAP_CENTER);
+    lv_obj_set_scroll_snap_y(cont, LV_SCROLL_SNAP_NONE);
+
+    // to avoid clipping outline
+    //  lv_obj_add_flag(cont, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     lv_color_t colors[] = {
         lv_palette_main(LV_PALETTE_RED),
@@ -610,73 +549,157 @@ static void create_beautiful_menu(void)
         lv_palette_main(LV_PALETTE_PURPLE),
     };
 
-    if (menu_group == NULL)
-    {
-        menu_group = lv_group_create();
-        lv_group_set_default(menu_group);
-    }
+    // focus_style_init_once();
 
-    // Удаляем старый статус-бар если был, и создаем заново
+    // ---------------- Battery (top-right) ----------------
+    // Put it on SCR so it doesn't move when cont scrolls
     s_batt_label = lv_label_create(scr);
     lv_obj_set_style_text_color(s_batt_label, lv_color_white(), 0);
-    lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, -10, 5);
-    ui_set_battery_percent(batt_proc, false);
+    lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, 0, 4);
+    ui_set_battery_percent(batt_proc, false); // initial draw
+    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_18, 0);
 
-    // Геометрия плиток
-    const int tile_w = 90;
-    const int tile_h = 65;
-    const int start_x = 15;
-    const int start_y = 25;
-    const int gap_x = 10;
-    const int gap_y = 10;
+    // ---------------- Time (top-center) ----------------
+    // ui_time_init(scr);
+    // -----------------------------------------------------
 
-    static lv_style_t style_tile;
-    static bool style_inited = false;
-    if (!style_inited)
+    lv_obj_t *first_card = NULL;
+
+    static lv_style_t style_card_common;
+    static bool style_init = false;
+    // create styles for card
+    if (!style_init)
     {
-        lv_style_init(&style_tile);
-        lv_style_set_bg_color(&style_tile, lv_color_hex(0x1A1A1A));
-        lv_style_set_bg_opa(&style_tile, LV_OPA_COVER);
-        lv_style_set_border_width(&style_tile, 1);
-        lv_style_set_border_color(&style_tile, lv_color_hex(0x333333));
-        lv_style_set_radius(&style_tile, 8); // Можно оставить небольшим
-
-        // Стиль фокуса
-        lv_style_init(&s_style_focus);
-        lv_style_set_border_color(&s_style_focus, lv_palette_main(LV_PALETTE_BLUE));
-        lv_style_set_border_width(&s_style_focus, 3);
-        style_inited = true;
+        lv_style_init(&style_card_common);
+       // lv_style_set_radius(&style_card_common, 12);
+        lv_style_set_bg_color(&style_card_common, lv_color_hex(0x1A1A1A));
+       // lv_style_set_bg_opa(&style_card_common, LV_OPA_COVER);
+     //   lv_style_set_border_width(&style_card_common, 1);
+     //   lv_style_set_border_color(&style_card_common, lv_color_hex(0x333333));
+        style_init = true;
     }
 
     for (int i = 0; i < 5; i++)
     {
-        lv_obj_t *tile = lv_btn_create(scr); // Прямо на экран!
+        lv_obj_t *card = lv_btn_create(cont);
+        if (!first_card)
+            first_card = card;
 
-        // Рассчитываем позицию (3 в ряд)
-        int row = i / 3;
-        int col = i % 3;
-        lv_obj_set_size(tile, tile_w, tile_h);
-        lv_obj_set_pos(tile, start_x + col * (tile_w + gap_x), start_y + row * (tile_h + gap_y));
+        lv_obj_set_size(card, card_w, card_h);
 
-        lv_obj_add_style(tile, &style_tile, 0);
-        lv_obj_add_style(tile, &s_style_focus, LV_STATE_FOCUSED);
+        lv_coord_t x = i * (card_w + gap);
+        lv_coord_t y = (view_h - card_h) / 2;
+        lv_obj_set_pos(card, x, y);
 
-        // Контент плитки
-        lv_obj_t *lbl_icon = lv_label_create(tile);
+        // base style
+        lv_obj_add_style(card, &style_card_common, 0);
+
+        // content
+        lv_obj_t *lbl_icon = lv_label_create(card);
         lv_label_set_text(lbl_icon, icons[i]);
-        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_18, 0);
-        lv_obj_set_style_text_color(lbl_icon, colors[i], 0);
-        lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 5);
+        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(lbl_icon, colors[i], LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 14);
 
-        lv_obj_t *lbl_name = lv_label_create(tile);
+        lv_obj_t *lbl_name = lv_label_create(card);
         lv_label_set_text(lbl_name, names[i]);
-        lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_12, 0);
-        lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -5);
+        lv_obj_set_style_text_color(lbl_name, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -10);
 
-        lv_group_add_obj(menu_group, tile);
-        lv_obj_add_event_cb(tile, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+        // focus outline (encoder/keypad): LV_STATE_FOCUS_KEY
+        lv_obj_add_style(card, &s_style_focus, LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_anim_time(card, 0, 0);
+
+        lv_group_add_obj(menu_group, card);
+        lv_obj_add_event_cb(card, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+    }
+
+    if (first_card)
+    {
+        lv_group_focus_obj(first_card);
     }
 }
+
+// static void create_beautiful_menu(void)
+// {
+//     lv_obj_t *scr = lv_display_get_screen_active(s_disp);
+//     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
+
+//     lv_color_t colors[] = {
+//         lv_palette_main(LV_PALETTE_RED),
+//         lv_palette_main(LV_PALETTE_BLUE),
+//         lv_palette_main(LV_PALETTE_AMBER),
+//         lv_palette_main(LV_PALETTE_GREEN),
+//         lv_palette_main(LV_PALETTE_PURPLE),
+//     };
+
+//     if (menu_group == NULL)
+//     {
+//         menu_group = lv_group_create();
+//         lv_group_set_default(menu_group);
+//     }
+
+//     // Удаляем старый статус-бар если был, и создаем заново
+//     s_batt_label = lv_label_create(scr);
+//     lv_obj_set_style_text_color(s_batt_label, lv_color_white(), 0);
+//     lv_obj_align(s_batt_label, LV_ALIGN_TOP_RIGHT, -10, 5);
+//     ui_set_battery_percent(batt_proc, false);
+
+//     // Геометрия плиток
+//     const int tile_w = 90;
+//     const int tile_h = 65;
+//     const int start_x = 15;
+//     const int start_y = 25;
+//     const int gap_x = 10;
+//     const int gap_y = 10;
+
+//     static lv_style_t style_tile;
+//     static bool style_inited = false;
+//     if (!style_inited)
+//     {
+//         lv_style_init(&style_tile);
+//         lv_style_set_bg_color(&style_tile, lv_color_hex(0x1A1A1A));
+//         lv_style_set_bg_opa(&style_tile, LV_OPA_COVER);
+//         lv_style_set_border_width(&style_tile, 1);
+//         lv_style_set_border_color(&style_tile, lv_color_hex(0x333333));
+//         lv_style_set_radius(&style_tile, 8); // Можно оставить небольшим
+
+//         // Стиль фокуса
+//         lv_style_init(&s_style_focus);
+//         lv_style_set_border_color(&s_style_focus, lv_palette_main(LV_PALETTE_BLUE));
+//         lv_style_set_border_width(&s_style_focus, 3);
+//         style_inited = true;
+//     }
+
+//     for (int i = 0; i < 5; i++)
+//     {
+//         lv_obj_t *tile = lv_btn_create(scr); // Прямо на экран!
+
+//         // Рассчитываем позицию (3 в ряд)
+//         int row = i / 3;
+//         int col = i % 3;
+//         lv_obj_set_size(tile, tile_w, tile_h);
+//         lv_obj_set_pos(tile, start_x + col * (tile_w + gap_x), start_y + row * (tile_h + gap_y));
+
+//         lv_obj_add_style(tile, &style_tile, 0);
+//         lv_obj_add_style(tile, &s_style_focus, LV_STATE_FOCUSED);
+
+//         // Контент плитки
+//         lv_obj_t *lbl_icon = lv_label_create(tile);
+//         lv_label_set_text(lbl_icon, icons[i]);
+//         lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_18, 0);
+//         lv_obj_set_style_text_color(lbl_icon, colors[i], 0);
+//         lv_obj_align(lbl_icon, LV_ALIGN_TOP_MID, 0, 5);
+
+//         lv_obj_t *lbl_name = lv_label_create(tile);
+//         lv_label_set_text(lbl_name, names[i]);
+//         lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_12, 0);
+//         lv_obj_align(lbl_name, LV_ALIGN_BOTTOM_MID, 0, -5);
+
+//         lv_group_add_obj(menu_group, tile);
+//         lv_obj_add_event_cb(tile, card_clicked_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+//     }
+// }
 
 // ------------------------- Display init (ваш код) -------------------------
 static void init_display(void)
@@ -739,7 +762,7 @@ static void init_panel(void)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = panel_handle,
-        .buffer_size = 320 * 40,
+        .buffer_size = 320 * 170,
         .double_buffer = true,
         .hres = 320,
         .vres = 170,
@@ -752,10 +775,11 @@ static void init_panel(void)
         },
         // .color_format = LV_COLOR_FORMAT_RGB565,
 
-        .flags = {
-            .buff_spiram = false,
-            .buff_dma = true,
-        }};
+        // .flags = {
+        //     .buff_spiram = true,
+        //     .buff_dma = true,
+        // }
+    };
 
     s_disp = lvgl_port_add_disp(&disp_cfg);
     if (!s_disp)
