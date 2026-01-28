@@ -15,5 +15,7 @@ typedef struct {
 
 esp_err_t i2c_bq27220_init(bq27220_t *cfg);
 esp_err_t bq_read_u16(uint8_t reg, uint16_t *out, bq27220_t *cfg);
+esp_err_t bq_write_subcmd(uint16_t subcmd, bq27220_t *cfg);
+
 
 
