@@ -1,3 +1,5 @@
+#ifndef DECODER_H
+#define DECODER_H
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/rmt_rx.h"
@@ -15,5 +17,8 @@ typedef struct {
 // extern говорит компилятору: "сама переменная в другом файле, просто знай о ней"
 extern packet_t last_pkt;
 
+extern bool decoder_rmt_running;
 
 void rmt_rx_loop_task(void *arg);
+
+#endif

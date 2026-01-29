@@ -1,6 +1,11 @@
 #pragma once
 #include "esp_err.h"
 #include "driver/spi_master.h"
+#include "driver/gpio.h"
+
+
+#define PIN_POWER_EN 15
+
 
 typedef struct {
     spi_host_device_t host;
@@ -37,6 +42,8 @@ esp_err_t cc1101_read_rssi_dbm(cc1101_t *cc, int16_t *out_dbm);
 esp_err_t cc1101_write_burst_reg(cc1101_t *cc, uint8_t addr, const uint8_t *data, size_t len);
 esp_err_t cc1101_read_burst_reg(cc1101_t *cc, uint8_t addr, uint8_t *out, size_t len);
 esp_err_t cc1101_apply_preset_pairs_then_patable(cc1101_t *cc, const uint8_t *preset);
+void cc1101_power_on(bool on);
+
 
 
 

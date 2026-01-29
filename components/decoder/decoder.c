@@ -13,11 +13,15 @@
 static const char *TAG = "DECODER";
 packet_t last_pkt = { .data = {0}, .len = 0, .updated = false };
 
+bool decoder_rmt_running = true; // Локальная переменная для управления приемом
+
+
 static QueueHandle_t rmt_rx_evt_queue = NULL;
 
 // Этот callback вызывается драйвером, когда пакет принят (по таймауту паузы)
 static bool IRAM_ATTR rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata, void *user_data)
 {
+    
     BaseType_t high_task_wakeup = pdFALSE;
     // Отправляем количество принятых символов в очередь
     xQueueSendFromISR(rmt_rx_evt_queue, &edata->num_symbols, &high_task_wakeup);
@@ -57,10 +61,15 @@ void rmt_rx_loop_task(void *arg)
         .signal_range_min_ns = 10000,   // 10 мкс минимум
         .signal_range_max_ns = 2000000, // 2 мс максимум
     };
+    decoder_rmt_running = true;
 
     printf("RMT Декодер инициализирован внутри задачи и запущен!\n");
     while (1)
     {
+           if (!decoder_rmt_running) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        continue;
+    }
         ESP_ERROR_CHECK(rmt_receive(rx_chan, raw_symbols, sizeof(raw_symbols), &receive_config));
 
         size_t num_symbols = 0;

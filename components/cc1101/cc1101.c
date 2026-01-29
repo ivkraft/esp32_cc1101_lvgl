@@ -194,3 +194,17 @@ esp_err_t cc1101_apply_preset_pairs_then_patable(cc1101_t *cc, const uint8_t *pr
     // PATABLE 8 bytes
     return cc1101_write_burst_reg(cc, CC1101_PATABLE, &preset[i], 8);
 }
+
+void cc1101_power_on(bool on)
+{
+    gpio_config_t pwr_cfg = {
+        .pin_bit_mask = 1ULL << PIN_POWER_EN,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&pwr_cfg);
+    gpio_set_level(PIN_POWER_EN, on);
+    vTaskDelay(pdMS_TO_TICKS(50));
+}
